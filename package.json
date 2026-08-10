@@ -1,0 +1,45 @@
+{
+  "name": "sales-presentation-portal",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:shared && tsc -b && vite build",
+    "build:shared": "npm run build --prefix packages/shared",
+    "build:functions": "npm run build:shared && npm run build --prefix functions",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "firebase": "firebase",
+    "test": "vitest run tests/unit",
+    "test:rules": "vitest run tests/rules",
+    "test:all": "vitest run",
+    "verify:production": "node scripts/verify-production-ready.mjs",
+    "emulators:firestore": "firebase emulators:start --only firestore",
+    "predeploy:check": "npm run verify:production && npm run build:functions && npm run build",
+    "deploy:rules": "firebase deploy --only firestore:rules,firestore:indexes,storage",
+    "deploy:functions": "npm run build:functions && firebase deploy --only functions",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting --project sales-presentation-portal",
+    "deploy:all": "npm run predeploy:check && firebase deploy --only firestore:rules,firestore:indexes,storage,functions,hosting --project sales-presentation-portal"
+  },
+  "dependencies": {
+    "@spp/shared": "file:packages/shared",
+    "firebase": "^12.17.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "firebase-admin": "^14.2.0",
+    "firebase-tools": "^15.25.1",
+    "oxlint": "^1.75.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  }
+}

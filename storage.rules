@@ -1,0 +1,31 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasVideosManage() {
+      return signedIn()
+        && request.auth.token.permissions is list
+        && 'videos:manage' in request.auth.token.permissions;
+    }
+
+    // Client SDK reads remain denied — playback uses Admin signed URLs only.
+    // Admins with videos:manage may upload MP4 objects under videos/{videoId}/.
+    // Size limit must match packages/shared MAX_VIDEO_UPLOAD_SIZE (2 GiB).
+    match /videos/{videoId}/{fileName} {
+      allow read: if false;
+      allow write: if hasVideosManage()
+        && fileName == 'source.mp4'
+        && request.resource.size <= 2147483648
+        && request.resource.contentType.matches('video/.*');
+      allow delete: if hasVideosManage();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,271 @@
+.nda-page {
+  min-height: 100%;
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+  overflow-x: hidden;
+}
+
+.nda-page-header-inner {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 1.25rem 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.nda-eyebrow {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-family: "Source Sans 3", system-ui, sans-serif;
+}
+
+.nda-page-header h1 {
+  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  margin-bottom: 1rem;
+}
+
+.nda-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem 1.25rem;
+  margin: 0 0 1.25rem;
+  padding: 0;
+}
+
+.nda-meta div {
+  margin: 0;
+}
+
+.nda-meta dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-family: "Source Sans 3", system-ui, sans-serif;
+}
+
+.nda-meta dd {
+  margin: 0.15rem 0 0;
+  font-weight: 600;
+}
+
+.nda-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.nda-btn {
+  appearance: none;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 0.95rem;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.5rem;
+}
+
+.nda-btn-secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+.nda-btn:focus-visible,
+.nda-btn-secondary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.nda-page-main {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: clamp(1rem, 3vw, 1.75rem);
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.nda-document {
+  font-size: clamp(0.95rem, 2.4vw, 1.05rem);
+  line-height: 1.55;
+  max-width: 100%;
+}
+
+.nda-brand {
+  text-align: center;
+  margin-bottom: 1.25rem;
+}
+
+.nda-brand-name {
+  margin: 0;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.5rem;
+  font-style: italic;
+}
+
+.nda-agreement-title {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: clamp(1.05rem, 3vw, 1.25rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #4a5a66;
+  text-align: center;
+  margin: 1.25rem 0 1rem;
+}
+
+.nda-section {
+  margin-bottom: 1.15rem;
+  scroll-margin-top: 1rem;
+}
+
+.nda-section h3 {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #4a5a66;
+  margin: 0 0 0.45rem;
+}
+
+.nda-ordinal-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.75rem;
+}
+
+.nda-ordinal-list li {
+  margin: 0 0 0.65rem;
+}
+
+.nda-document ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.1rem;
+}
+
+.nda-document li {
+  margin-bottom: 0.35rem;
+}
+
+.nda-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.5rem 0;
+}
+
+.nda-signatures {
+  margin-top: 2rem;
+}
+
+.nda-sign-block {
+  margin-bottom: 1.75rem;
+}
+
+.nda-sign-block p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  margin-bottom: 0.85rem;
+}
+
+.nda-line {
+  flex: 1 1 12rem;
+  border-bottom: 1px solid var(--ink);
+  min-height: 1.15em;
+  min-width: 8rem;
+}
+
+.nda-line-short {
+  flex: 0 1 10rem;
+}
+
+.nda-page-footer {
+  margin-top: 1.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-family: "Source Sans 3", system-ui, sans-serif;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.print-only {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .nda-page {
+    padding: 0.75rem 0.65rem 2rem;
+  }
+
+  .nda-page-header-inner,
+  .nda-page-main {
+    padding: 1rem;
+  }
+
+  .nda-actions {
+    flex-direction: column;
+  }
+
+  .nda-btn {
+    width: 100%;
+  }
+}
+
+@media print {
+  :root {
+    background: white !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+    margin-bottom: 1rem;
+  }
+
+  .nda-page {
+    max-width: none;
+    padding: 0;
+  }
+
+  .nda-page-main {
+    border: none;
+    padding: 0;
+    background: white;
+  }
+
+  .nda-agreement-title,
+  .nda-section h3 {
+    color: #333 !important;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}

@@ -1,0 +1,126 @@
+/** Permission strings — check these, never raw role names in feature code. */
+export const PERMISSIONS = {
+  DASHBOARD_READ: "dashboard:read",
+  INVITES_CREATE: "invites:create",
+  INVITES_REVOKE_OWN: "invites:revoke_own",
+  SESSIONS_READ_OWN: "sessions:read_own",
+  SESSIONS_READ_COMPANY: "sessions:read_company",
+  SESSIONS_NOTE_OWN: "sessions:note_own",
+  SESSIONS_RESET_OWN: "sessions:reset_own",
+  SESSIONS_RESET_COMPANY: "sessions:reset_company",
+  FOLLOWUPS_MANAGE_OWN: "followups:manage_own",
+  FOLLOWUPS_READ_COMPANY: "followups:read_company",
+  CALENDAR_CONNECT_OWN: "calendar:connect_own",
+  LEGAL_ACCEPT_OWN: "legal:accept_own",
+  VIDEO_VIEW_OWN: "video:view_own",
+  /** Platform-wide admin console */
+  ADMIN_ACCESS: "admin:access",
+  COMPANIES_MANAGE: "companies:manage",
+  LEGAL_MANAGE: "legal:manage",
+  VIDEOS_MANAGE: "videos:manage",
+  USERS_MANAGE: "users:manage",
+  USERS_MANAGE_COMPANY: "users:manage_company",
+  SETTINGS_MANAGE: "settings:manage",
+  AUDIT_READ_COMPANY: "audit:read_company",
+  AUDIT_READ_ALL: "audit:read_all",
+  CONTACTS_MANAGE_OWN: "contacts:manage_own",
+  CONTACTS_READ_COMPANY: "contacts:read_company",
+  CONTACTS_MANAGE_COMPANY: "contacts:manage_company",
+  CONTACTS_MANAGE_ALL: "contacts:manage_all",
+  /** Legal Evidence Vault */
+  LEGAL_EVIDENCE_READ_COMPANY: "legal_evidence:read_company",
+  LEGAL_EVIDENCE_READ_ALL: "legal_evidence:read_all",
+  LEGAL_EVIDENCE_EXPORT: "legal_evidence:export",
+} as const;
+
+export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
+
+/**
+ * Role IDs:
+ * - administrator = Platform Administrator
+ * - manager = Company Manager
+ * - representative = Representative
+ * - client = Client (invite session)
+ * - owner kept as platform-admin alias for backward compatibility
+ */
+export const ROLE_IDS = {
+  REPRESENTATIVE: "representative",
+  ADMINISTRATOR: "administrator",
+  MANAGER: "manager",
+  OWNER: "owner",
+  CLIENT: "client",
+} as const;
+
+export type RoleId = (typeof ROLE_IDS)[keyof typeof ROLE_IDS];
+
+const PLATFORM_ADMIN_PERMISSIONS: readonly Permission[] = [
+  PERMISSIONS.DASHBOARD_READ,
+  PERMISSIONS.INVITES_CREATE,
+  PERMISSIONS.INVITES_REVOKE_OWN,
+  PERMISSIONS.SESSIONS_READ_OWN,
+  PERMISSIONS.SESSIONS_READ_COMPANY,
+  PERMISSIONS.SESSIONS_NOTE_OWN,
+  PERMISSIONS.SESSIONS_RESET_OWN,
+  PERMISSIONS.SESSIONS_RESET_COMPANY,
+  PERMISSIONS.FOLLOWUPS_MANAGE_OWN,
+  PERMISSIONS.FOLLOWUPS_READ_COMPANY,
+  PERMISSIONS.CALENDAR_CONNECT_OWN,
+  PERMISSIONS.ADMIN_ACCESS,
+  PERMISSIONS.COMPANIES_MANAGE,
+  PERMISSIONS.LEGAL_MANAGE,
+  PERMISSIONS.VIDEOS_MANAGE,
+  PERMISSIONS.USERS_MANAGE,
+  PERMISSIONS.USERS_MANAGE_COMPANY,
+  PERMISSIONS.SETTINGS_MANAGE,
+  PERMISSIONS.AUDIT_READ_COMPANY,
+  PERMISSIONS.AUDIT_READ_ALL,
+  PERMISSIONS.CONTACTS_MANAGE_OWN,
+  PERMISSIONS.CONTACTS_READ_COMPANY,
+  PERMISSIONS.CONTACTS_MANAGE_COMPANY,
+  PERMISSIONS.CONTACTS_MANAGE_ALL,
+  PERMISSIONS.LEGAL_EVIDENCE_READ_COMPANY,
+  PERMISSIONS.LEGAL_EVIDENCE_READ_ALL,
+  PERMISSIONS.LEGAL_EVIDENCE_EXPORT,
+];
+
+export const ROLE_PERMISSIONS: Record<RoleId, readonly Permission[]> = {
+  representative: [
+    PERMISSIONS.DASHBOARD_READ,
+    PERMISSIONS.INVITES_CREATE,
+    PERMISSIONS.INVITES_REVOKE_OWN,
+    PERMISSIONS.SESSIONS_READ_OWN,
+    PERMISSIONS.SESSIONS_NOTE_OWN,
+    PERMISSIONS.FOLLOWUPS_MANAGE_OWN,
+    PERMISSIONS.CALENDAR_CONNECT_OWN,
+    PERMISSIONS.CONTACTS_MANAGE_OWN,
+  ],
+  manager: [
+    PERMISSIONS.DASHBOARD_READ,
+    PERMISSIONS.INVITES_CREATE,
+    PERMISSIONS.INVITES_REVOKE_OWN,
+    PERMISSIONS.SESSIONS_READ_OWN,
+    PERMISSIONS.SESSIONS_READ_COMPANY,
+    PERMISSIONS.SESSIONS_NOTE_OWN,
+    PERMISSIONS.SESSIONS_RESET_COMPANY,
+    PERMISSIONS.FOLLOWUPS_MANAGE_OWN,
+    PERMISSIONS.FOLLOWUPS_READ_COMPANY,
+    PERMISSIONS.CALENDAR_CONNECT_OWN,
+    PERMISSIONS.USERS_MANAGE_COMPANY,
+    PERMISSIONS.AUDIT_READ_COMPANY,
+    PERMISSIONS.CONTACTS_MANAGE_OWN,
+    PERMISSIONS.CONTACTS_READ_COMPANY,
+    PERMISSIONS.CONTACTS_MANAGE_COMPANY,
+    PERMISSIONS.LEGAL_EVIDENCE_READ_COMPANY,
+  ],
+  administrator: PLATFORM_ADMIN_PERMISSIONS,
+  owner: PLATFORM_ADMIN_PERMISSIONS,
+  client: [
+    PERMISSIONS.SESSIONS_READ_OWN,
+    PERMISSIONS.LEGAL_ACCEPT_OWN,
+    PERMISSIONS.VIDEO_VIEW_OWN,
+  ],
+};
+
+export function isPlatformAdminRole(roleId: string | null | undefined): boolean {
+  return roleId === ROLE_IDS.ADMINISTRATOR || roleId === ROLE_IDS.OWNER;
+}

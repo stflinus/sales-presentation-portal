@@ -1,0 +1,195 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function claims() {
+      return request.auth.token;
+    }
+
+    function hasPermission(permission) {
+      return signedIn()
+        && 'permissions' in claims()
+        && permission in claims().permissions;
+    }
+
+    function isStaff() {
+      return signedIn()
+        && claims().rolePrimary in ['representative', 'administrator', 'manager', 'owner'];
+    }
+
+    function isClient() {
+      return signedIn() && claims().rolePrimary == 'client';
+    }
+
+    function clientSessionId() {
+      return claims().sessionId;
+    }
+
+    function isAdmin() {
+      return hasPermission('admin:access');
+    }
+
+    function sameCompany(companyId) {
+      return isStaff() && 'companyId' in claims() && claims().companyId == companyId;
+    }
+
+    // Staff profiles — users can read self; admin or company manager (same
+    // company) manages via Functions.
+    match /users/{uid} {
+      allow read: if signedIn() && (
+        request.auth.uid == uid
+        || isAdmin()
+        || (hasPermission('users:manage_company') && sameCompany(resource.data.companyId))
+      );
+      allow write: if false;
+    }
+
+    match /roles/{roleId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+    match /settings/{docId} {
+      allow read: if isStaff() || isAdmin();
+      allow write: if false;
+    }
+
+    // Companies are Functions-managed. Staff may read their own company;
+    // platform admins / companies:manage may read any.
+    match /companies/{companyId} {
+      allow read: if isAdmin()
+        || hasPermission('companies:manage')
+        || sameCompany(companyId);
+      allow write: if false;
+    }
+
+    // Legal document bodies are not readable by clients via SDK.
+    match /legalDocuments/{docId} {
+      allow read: if isAdmin() || hasPermission('legal:manage');
+      allow write: if false;
+    }
+
+    match /videos/{videoId} {
+      allow read: if isAdmin() || hasPermission('videos:manage');
+      allow write: if false;
+    }
+
+    match /invites/{inviteId} {
+      allow read: if isStaff()
+        && (resource.data.createdBy == request.auth.uid
+          || isAdmin()
+          || (hasPermission('sessions:read_company') && sameCompany(resource.data.companyId)));
+      allow write: if false;
+    }
+
+    match /presentationSessions/{sessionId} {
+      allow read: if
+        (isStaff() && (
+          resource.data.representativeId == request.auth.uid
+          || isAdmin()
+          || (hasPermission('sessions:read_company') && sameCompany(resource.data.companyId))
+        ))
+        || (isClient() && clientSessionId() == sessionId);
+      // Notes update only through callable for validation — deny client SDK writes.
+      allow write: if false;
+    }
+
+    // Immutable legal acceptances — forensic fields restricted.
+    match /legalAcceptances/{id} {
+      allow read: if isAdmin()
+        || hasPermission('legal:manage')
+        || hasPermission('legal_evidence:read_all')
+        || (hasPermission('legal_evidence:read_company') && sameCompany(resource.data.companyId));
+      allow create, update, delete: if false;
+    }
+
+    // Append-only Legal Evidence Vault — Functions write only.
+    match /legalEvidence/{id} {
+      allow read: if isAdmin()
+        || hasPermission('legal_evidence:read_all')
+        || (hasPermission('legal_evidence:read_company') && sameCompany(resource.data.companyId));
+      allow create, update, delete: if false;
+    }
+
+    match /legalDocumentViews/{id} {
+      allow read: if isStaff() || isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Append-only audit log — no SDK writes.
+    match /auditEvents/{id} {
+      allow read: if isStaff() || isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Presentation Activity Log — Functions write; staff read via callables preferred.
+    match /presentationActivity/{id} {
+      allow read: if isStaff() && (
+        isAdmin()
+        || resource.data.representativeId == request.auth.uid
+        || (hasPermission('sessions:read_company') && sameCompany(resource.data.companyId))
+        || hasPermission('audit:read_all')
+        || (hasPermission('audit:read_company') && sameCompany(resource.data.companyId))
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /analyticsEvents/{id} {
+      allow read: if isStaff() || isAdmin();
+      allow write: if false;
+    }
+
+    match /followUps/{id} {
+      allow read: if isStaff()
+        && (resource.data.representativeId == request.auth.uid
+          || isAdmin()
+          || (hasPermission('followups:read_company') && sameCompany(resource.data.companyId)));
+      allow write: if false;
+    }
+
+    // Notification queue — Functions only (may contain secure links).
+    match /notifications/{id} {
+      allow read, write: if false;
+    }
+
+    // Firebase Trigger Email extension queue — Functions / extension only.
+    match /mail/{id} {
+      allow read, write: if false;
+    }
+
+    // Contacts — owner, company manager, or platform admin.
+    match /contacts/{contactId} {
+      allow read: if isStaff() && (
+        resource.data.ownerRepresentativeId == request.auth.uid
+        || isAdmin()
+        || (hasPermission('contacts:read_company') && sameCompany(resource.data.companyId))
+        || (hasPermission('contacts:manage_company') && sameCompany(resource.data.companyId))
+        || hasPermission('contacts:manage_all')
+      );
+      allow write: if false;
+    }
+
+    match /viewingLocks/{sessionId} {
+      allow read, write: if false;
+    }
+
+    // Server-managed viewing leases — no SDK access.
+    match /viewingLeases/{sessionId} {
+      allow read, write: if false;
+    }
+
+    match /calendarConnections/{uid} {
+      // Tokens never readable via client SDK — Functions only.
+      allow read, write: if false;
+    }
+
+    // Company Gmail App Passwords — Functions only. Never client-readable.
+    match /companyEmailSecrets/{companyId} {
+      allow read, write: if false;
+    }
+  }
+}
