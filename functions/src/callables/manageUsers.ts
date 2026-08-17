@@ -4,6 +4,7 @@ import {
   AUDIT_EVENT,
   PERMISSIONS,
   ROLE_IDS,
+  accessPolicySummary,
   isPlatformAdminRole,
   type Permission,
   type RoleId,
@@ -116,6 +117,7 @@ export const listStaffUsers = onCall(async (request) => {
   const users = snap.docs
     .map((d) => {
       const data = d.data();
+      const ps = data.presentationSettings as Record<string, unknown> | null | undefined;
       return {
         uid: d.id,
         email: data.email,
@@ -128,12 +130,129 @@ export const listStaffUsers = onCall(async (request) => {
         createdAt: data.createdAt || null,
         createdBy: data.createdBy || null,
         updatedAt: data.updatedAt || null,
+        presentationSettings: ps || null,
       };
     })
     .filter((u) => String(u.primaryRole || "") !== ROLE_IDS.CLIENT)
     .sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
 
-  return { users };
+  const videoIds = [
+    ...new Set(
+      users
+        .map((u) => String(u.presentationSettings?.activeVideoId || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const videoTitles = new Map<string, string>();
+  await Promise.all(
+    videoIds.map(async (id) => {
+      const snap = await db.collection("videos").doc(id).get();
+      if (snap.exists) {
+        videoTitles.set(id, String(snap.data()?.title || id));
+      }
+    }),
+  );
+
+  const enriched = users.map((u) => {
+    const ps = u.presentationSettings as Record<string, unknown> | null;
+    const activeVideoId = String(ps?.activeVideoId || "").trim();
+    const videoTitle = activeVideoId
+      ? videoTitles.get(activeVideoId) || activeVideoId
+      : "Company default";
+    const accessLabel = accessPolicySummary(
+      ps?.accessPolicy as string | null | undefined,
+      ps?.accessDurationDays as number | null | undefined,
+    );
+    return {
+      ...u,
+      presentationSummary: { videoTitle, accessLabel },
+    };
+  });
+
+  return { users: enriched };
+});
+
+/** Platform admin: read presentation settings + selectable videos for a staff user. */
+export const getStaffPresentationSettings = onCall(async (request) => {
+  const ctx = await loadStaffContext(request);
+  assertHasPermission(ctx, PERMISSIONS.USERS_MANAGE);
+  if (!ctx.isPlatformAdmin) {
+    throw new HttpsError("permission-denied", "Platform administrator required.");
+  }
+
+  const targetUid = String(request.data?.uid || "").trim();
+  if (!targetUid) throw new HttpsError("invalid-argument", "uid required.");
+
+  const snap = await db.collection("users").doc(targetUid).get();
+  if (!snap.exists) throw new HttpsError("not-found", "User not found.");
+  const data = snap.data()!;
+  if (isPlatformAdminRole(data.primaryRole)) {
+    throw new HttpsError("failed-precondition", "Platform administrators have no presentation settings.");
+  }
+  const companyId = String(data.companyId || "");
+  if (!companyId) throw new HttpsError("failed-precondition", "User has no company assignment.");
+
+  const { listActiveVideosForCompany } = await import("../lib/presentationPolicy");
+  const videos = await listActiveVideosForCompany(companyId);
+  const companySnap = await db.collection("companies").doc(companyId).get();
+  const companyActiveVideoId = companySnap.data()?.activeVideoId || null;
+
+  return {
+    uid: targetUid,
+    displayName: data.displayName,
+    companyId,
+    companyActiveVideoId,
+    presentationSettings: data.presentationSettings || null,
+    videos,
+  };
+});
+
+/** Platform admin: update per-user presentation video & access policy. */
+export const updateStaffPresentationSettings = onCall(async (request) => {
+  const ctx = await loadStaffContext(request);
+  assertHasPermission(ctx, PERMISSIONS.USERS_MANAGE);
+  if (!ctx.isPlatformAdmin) {
+    throw new HttpsError("permission-denied", "Platform administrator required.");
+  }
+
+  const targetUid = String(request.data?.uid || "").trim();
+  if (!targetUid) throw new HttpsError("invalid-argument", "uid required.");
+
+  const snap = await db.collection("users").doc(targetUid).get();
+  if (!snap.exists) throw new HttpsError("not-found", "User not found.");
+  const data = snap.data()!;
+  if (isPlatformAdminRole(data.primaryRole)) {
+    throw new HttpsError("failed-precondition", "Cannot configure platform administrators.");
+  }
+  const companyId = String(data.companyId || "");
+  if (!companyId) throw new HttpsError("failed-precondition", "User has no company assignment.");
+
+  const { validateAdminPresentationSettings } = await import("../lib/presentationPolicy");
+  const presentationSettings = await validateAdminPresentationSettings({
+    companyId,
+    activeVideoId: request.data?.activeVideoId,
+    accessPolicy: request.data?.accessPolicy,
+    accessDurationDays: request.data?.accessDurationDays,
+  });
+
+  await db.collection("users").doc(targetUid).update({
+    presentationSettings,
+    updatedAt: nowIso(),
+    updatedAtServer: FieldValue.serverTimestamp(),
+  });
+
+  await writeAuditEvent({
+    type: AUDIT_EVENT.REPRESENTATIVE_ACTION,
+    actorUid: ctx.uid,
+    actorType: "administrator",
+    payload: {
+      action: "staff_presentation_settings_updated",
+      targetUid,
+      presentationSettings,
+    },
+  });
+
+  return { ok: true, uid: targetUid, presentationSettings };
 });
 
 /**

@@ -9,6 +9,7 @@ import {
   SESSION_STATUS,
   type LegalDocType,
   type LegalDocument,
+  isTimeLimitedPolicy,
 } from "../shared";
 import { requireClientSession } from "../lib/authz";
 import { writeAnalyticsEvent, writeAuditEvent } from "../lib/audit";
@@ -18,6 +19,10 @@ import { db } from "../lib/firebase";
 import { getActiveLegalDocs, getActiveLegalDocsForCompany, getPortalSettings } from "../lib/settings";
 import { createLegalEvidenceRecord, invitationSnapshotFromInvite } from "../lib/legalEvidence";
 import { clientIpFromRequest, parseUserAgent } from "../lib/ua";
+import {
+  genericAccessUnavailableMessage,
+  sessionSingleViewBlocked,
+} from "../lib/presentationPolicy";
 
 function mapLegalDoc(d: LegalDocument) {
   return {
@@ -40,12 +45,12 @@ export const getLegalBundle = onCall(async (request) => {
   const session = sessionSnap.data()!;
 
   if (
-    session.status === SESSION_STATUS.COMPLETED ||
-    session.status === SESSION_STATUS.CLOSED
+    sessionSingleViewBlocked(session) &&
+    !isTimeLimitedPolicy(session.accessPolicy)
   ) {
     throw new HttpsError(
       "failed-precondition",
-      "This presentation has already been viewed. Please contact your representative.",
+      genericAccessUnavailableMessage(),
     );
   }
 
@@ -129,12 +134,12 @@ export const acceptLegal = onCall(async (request) => {
   const session = sessionSnap.data()!;
 
   if (
-    session.status === SESSION_STATUS.COMPLETED ||
-    session.status === SESSION_STATUS.CLOSED
+    sessionSingleViewBlocked(session) &&
+    !isTimeLimitedPolicy(session.accessPolicy)
   ) {
     throw new HttpsError(
       "failed-precondition",
-      "This presentation has already been viewed. Please contact your representative.",
+      genericAccessUnavailableMessage(),
     );
   }
 

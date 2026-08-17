@@ -8,6 +8,10 @@ import {
 } from "../shared";
 import { db } from "./firebase";
 import { isLeaseActivePure } from "./viewingLease.pure";
+import {
+  genericAccessUnavailableMessage,
+  sessionSingleViewBlocked,
+} from "./presentationPolicy";
 
 export interface LeaseDoc {
   sessionId: string;
@@ -31,11 +35,20 @@ export function isLeaseActive(
   return isLeaseActivePure(lease, nowMs);
 }
 
+export function assertSessionAccessible(session: Record<string, unknown>): void {
+  if (sessionSingleViewBlocked(session)) {
+    throw new HttpsError(
+      "failed-precondition",
+      genericAccessUnavailableMessage(),
+    );
+  }
+}
+
 export function assertSessionNotConsumed(status: SessionStatus): void {
   if (isConsumedStatus(status)) {
     throw new HttpsError(
       "failed-precondition",
-      "This presentation has already been viewed. Please contact your representative.",
+      genericAccessUnavailableMessage(),
     );
   }
 }

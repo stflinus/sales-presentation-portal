@@ -38,6 +38,8 @@ export {
   setStaffUserStatus,
   resetStaffTemporaryPassword,
   assignStaffCompany,
+  getStaffPresentationSettings,
+  updateStaffPresentationSettings,
 } from "./callables/manageUsers";
 export { retryInvitationNotification } from "./callables/retryNotification";
 export {

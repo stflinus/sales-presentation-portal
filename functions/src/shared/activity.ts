@@ -45,6 +45,10 @@ export const ACTIVITY_EVENT = {
   TIMEOUT: "timeout",
   FAILED_ACCESS: "failed_access",
   UNEXPECTED_EXCEPTION: "unexpected_exception",
+  PRESENTATION_POLICY_APPLIED: "presentation_policy_applied",
+  PRESENTATION_REOPENED: "presentation_reopened",
+  VIEWING_ENTITLEMENT_CONSUMED: "viewing_entitlement_consumed",
+  ACCESS_DENIED: "access_denied",
 } as const;
 
 export type ActivityEventType =
@@ -123,6 +127,10 @@ export const ACTIVITY_EVENT_LABEL: Record<string, string> = {
   [ACTIVITY_EVENT.TIMEOUT]: "Timeout",
   [ACTIVITY_EVENT.FAILED_ACCESS]: "Failed Access",
   [ACTIVITY_EVENT.UNEXPECTED_EXCEPTION]: "Unexpected Exception",
+  [ACTIVITY_EVENT.PRESENTATION_POLICY_APPLIED]: "Presentation Policy Applied",
+  [ACTIVITY_EVENT.PRESENTATION_REOPENED]: "Presentation Reopened",
+  [ACTIVITY_EVENT.VIEWING_ENTITLEMENT_CONSUMED]: "Viewing Entitlement Consumed",
+  [ACTIVITY_EVENT.ACCESS_DENIED]: "Access Denied",
 };
 
 /** Suggested resolutions for admin support (keyed by error code or event type). */

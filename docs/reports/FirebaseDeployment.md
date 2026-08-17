@@ -1,62 +1,176 @@
-# Invitation Email Generation — Production Polish
+# Per-User Presentation Video & Access Policy
 
 ## Status
 
-**DEPLOYED** — Manual ready-to-send invitation email generator on Presentation Created (does not send email).
+**DEPLOYED** — https://presentationhub.web.app
 
-## What Changed
+Platform administrators can configure per-staff presentation video and access policy. New invitations snapshot these settings; existing invitations are unaffected.
 
-After a representative creates a presentation, the success screen now generates a complete ready-to-send email using existing client, representative, company, and secure invitation URL data.
+---
 
-No email provider was added. Open in Email / Copy Email / Copy Link do **not** mark the invitation as emailed/sent.
+## Architecture Discovered (pre-change)
 
-### Success screen
+| Area | Existing behavior |
+|------|-------------------|
+| **User profile** | `users/{uid}` — email, role, company; no presentation settings |
+| **Video selection** | `createInvite` used `getActiveVideoForCompany(companyId)` from company `activeVideoId` |
+| **Expiration** | `company.defaultInviteTtlHours` (default 168h) on invite + session at creation |
+| **One-time viewing** | `viewingLeases`, `finalizeCompletion` — disables auth, marks lease consumed, sets `viewingEntitlementConsumed` |
+| **Admin users** | `UsersPage` / `manageUsers` callables — staff CRUD only |
+| **Legal evidence** | Independent immutable records; not tied to operational policy changes |
+| **Activity/Health** | Presentation activity log with admin diagnostics |
 
-- Title: **Presentation Created ✓**
-- Shows Client, Email, Subject (`Your Secure Presentation Is Ready`)
-- Shows the full generated email body with the secure URL already inserted
-- Actions: **Open in Email**, **Copy Email**, **Copy Link**
+---
 
-### Generated email
+## Schema Changes
 
-- Uses client first name only
-- Inserts secure invitation URL automatically
-- Signature includes representative name, and optionally title / company / phone / email (omits empty lines — no placeholders)
-- Does not mention one-time viewing, security controls, Firebase, Presentation Hub product branding, or legal workflow internals
+### User profile (`users/{uid}`)
 
-### Failure handling
+Optional field:
 
-If mailto cannot open (or the encoded message is too long), the invitation is unaffected and the UI offers Copy Email / Copy Link.
+```typescript
+presentationSettings?: {
+  activeVideoId?: string | null;   // null → company default video
+  accessPolicy?: AccessPolicy;     // default: single_view
+  accessDurationDays?: number | null; // 1–365, default 7 when policy needs days
+}
+```
 
-## Files Changed
+No migration required. Users without this field retain company-default video + single-view + company TTL.
 
-- `src/modules/invites/invitationEmail.ts` (new)
-- `src/modules/invites/PresentationCreatedDialog.tsx`
-- `src/modules/invites/InviteClientForm.tsx`
-- `src/styles/global.css`
-- `functions/src/callables/createInvite.ts` (returns optional rep title/phone/email; still `emailSent: false`)
-- `packages/shared/src/models.ts` (optional `UserProfile.title` / `phone`)
-- `tests/unit/invitationMailto.test.ts`
-- `docs/reports/FirebaseDeployment.md`
+### Invite + session snapshot (at creation)
+
+Both `invites/{id}` and `presentationSessions/{id}` store:
+
+| Field | Purpose |
+|-------|---------|
+| `videoId` | Snapshotted video (already existed) |
+| `accessPolicy` | `single_view` \| `time_limited` \| `single_view_with_expiration` |
+| `accessDurationDays` | Days for time-limited policies (null for pure single-view) |
+| `expiresAt` | Computed deadline (company TTL for single-view; days × 24h for others) |
+| `policyAppliedAt` | ISO timestamp when policy was snapshotted |
+| `viewingEntitlementConsumed` | Boolean; set true after successful single-view completion |
+
+Existing records without `accessPolicy` are treated as `single_view` (backward compatible).
+
+---
+
+## Access Policies
+
+| Policy | Behavior |
+|--------|----------|
+| **Single Viewing** (`single_view`) | Existing production behavior preserved. One successful viewing; failed loads do not consume entitlement. |
+| **Available for a Set Period** (`time_limited`) | Replay allowed while `now < expiresAt`. Completion does not consume entitlement or disable auth. Legal acceptance not re-required on reopen. |
+| **Single View + Expiration** (`single_view_with_expiration`) | Single-view rules AND expires after N days if unused. Whichever blocks first wins. |
+
+Client-facing denial message (generic):
+
+> This presentation is no longer available. Please contact your representative for assistance.
+
+Internal policy details are never shown to clients.
+
+---
+
+## Implementation
+
+### Shared types
+
+- `packages/shared/src/accessPolicy.ts` — policy constants, validation, admin labels
+- `packages/shared/src/models.ts` — `UserProfile.presentationSettings`, invite/session snapshot fields
+- `packages/shared/src/activity.ts` — `PRESENTATION_POLICY_APPLIED`, `PRESENTATION_REOPENED`, `VIEWING_ENTITLEMENT_CONSUMED`, `ACCESS_DENIED`
+
+### Backend
+
+- `functions/src/lib/presentationPolicy.ts` — `resolveInvitationPolicy`, admin validation, video listing
+- `functions/src/lib/presentationPolicy.pure.ts` — pure session access helpers (testable)
+- `functions/src/callables/createInvite.ts` — resolves user policy, snapshots onto invite + session
+- `functions/src/callables/exchangeInvite.ts` — policy-aware expired/consumed checks; TIME_LIMITED reopen
+- `functions/src/callables/video.ts` — TIME_LIMITED completion without entitlement consume; replay path
+- `functions/src/callables/legal.ts` — allows TIME_LIMITED replay past COMPLETED status
+- `functions/src/lib/viewingLease.ts` — `assertSessionAccessible` with generic messaging
+- `functions/src/callables/manageUsers.ts` — `getStaffPresentationSettings`, `updateStaffPresentationSettings` (platform admin only)
+
+### Admin UI
+
+- `src/modules/admin/UsersPage.tsx` — Presentation column summary; Edit Presentation Settings panel (video dropdown, access method, days)
+
+### Representative workflow
+
+Unchanged — create invitation as before. Video and policy applied automatically from admin configuration.
+
+---
+
+## Backward Compatibility
+
+- Existing users: no `presentationSettings` → company default video + single-view + company TTL
+- Existing invitations: missing `accessPolicy` → treated as single-view; behavior unchanged
+- Changing user settings affects **new invitations only** — snapshots are authoritative
+- If assigned video becomes unavailable, new invite creation fails with friendly message to contact administrator; existing invitations keep snapshotted video where technically possible
+
+---
+
+## Access-Control Enforcement
+
+| Action | Who |
+|--------|-----|
+| View presentation settings summary | Platform admin (`users:manage` + platform admin role) |
+| Edit presentation settings | Platform admin only — server-side enforced |
+| Representatives / company managers | Cannot modify own or others' presentation policy |
+
+---
+
+## Activity / Diagnostics Events
+
+- `presentation_policy_applied` — at invitation creation (video, policy, expiration)
+- `presentation_reopened` — TIME_LIMITED client reopen during availability window
+- `viewing_entitlement_consumed` — single-view successful completion
+- `access_denied` — entitlement consumed or policy block
+- `invitation_expired` — client attempt after expiration
+
+No invitation tokens or secrets logged.
+
+---
 
 ## Tests Performed
 
-Unit tests (`invitationMailto.test.ts`):
+Unit tests (`tests/unit/presentationPolicy.test.ts`):
 
-1. Client first + last name → first name only
-2. Client first name only
-3. Representative with all contact fields
-4. Missing title / phone / email → lines omitted (no blank labels)
-5. Empty company → company line omitted
-6. Long invitation URL retained in body and mailto
-7. Copy Email payload = Subject + blank line + body
-8. Mailto populates TO, exact subject, complete body with URL
-9. No internal/security phrases in body
+1. Policy normalization defaults to single-view
+2. Duration clamping (min 1, max 365, default 7)
+3. Access policy summaries for admin UI
+4. Single-view blocks completed sessions
+5. Time-limited allows completed session replay
+6. Single-view+expiration blocks consumed entitlement
+7. Expiration detection from `expiresAt`
+8. Missing `accessPolicy` treated as single-view (backward compat)
+9. Snapshot immutability (invitation fields independent of user profile)
 
-Also verified createInvite still returns `emailSent: false` and does not set `sentAt` when opening/copying email from the UI.
+Full suite: **72 tests passed** (`npm test`).
 
-## Remaining Issues
+Build: `npm run build:functions && npm run build` — success.
 
-- Representative `title` / `phone` appear in the email only when present on the staff user profile document; there is no new profile-edit UI in this change.
-- Some mobile OS / browser mailto length limits may still force the Copy Email fallback for very long URLs — by design.
-- Automated email delivery (Gmail/SMTP/etc.) remains out of scope for V0.1.
+---
+
+## Migration
+
+None. Optional `presentationSettings` on user documents; snapshot fields added only on new invitations.
+
+---
+
+## Deployment
+
+```
+npm run deploy:all
+```
+
+- New functions: `getStaffPresentationSettings`, `updateStaffPresentationSettings`
+- Updated: `createInvite`, `exchangeInviteToken`, video/legal/manageUsers callables, hosting
+
+---
+
+## Remaining Concerns
+
+- Representative `title` / `phone` for invitation email still depend on profile fields (unchanged).
+- App Check not enabled in `.env` (pre-existing warning).
+- TIME_LIMITED replay skips re-legal acceptance by design — legal evidence from first acceptance preserved.
+- Manual end-to-end verification of all policy scenarios in production UI recommended after first admin configuration.

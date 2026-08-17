@@ -32,6 +32,8 @@ export interface UserProfile {
       followUpView?: "list" | "calendar";
     };
   };
+  /** Administrator-assigned presentation defaults for new invitations. */
+  presentationSettings?: import("./accessPolicy").UserPresentationSettings | null;
   createdAt: UtcIso;
   createdBy: string | null;
   updatedAt: UtcIso;
@@ -235,6 +237,11 @@ export interface InviteRecord {
   lastNotificationId?: string | null;
   notificationStatus?: string | null;
   notificationFailureReason?: string | null;
+  /** Snapshotted access policy — authoritative after creation. */
+  accessPolicy?: import("./accessPolicy").AccessPolicy;
+  accessDurationDays?: number | null;
+  policyAppliedAt?: UtcIso | null;
+  viewingEntitlementConsumed?: boolean;
 }
 
 export interface SessionAnalytics {
@@ -310,6 +317,12 @@ export interface PresentationSession {
   healthStatus?: "healthy" | "warning" | "error" | null;
   healthSummary?: string | null;
   healthUpdatedAt?: UtcIso | null;
+  /** Snapshotted access policy — authoritative after creation. */
+  accessPolicy?: import("./accessPolicy").AccessPolicy;
+  accessDurationDays?: number | null;
+  policyAppliedAt?: UtcIso | null;
+  /** True after a successful single-view entitlement is consumed. */
+  viewingEntitlementConsumed?: boolean;
   analytics: SessionAnalytics;
   createdAt: UtcIso;
   updatedAt: UtcIso;

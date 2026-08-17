@@ -8,8 +8,7 @@ import {
   INVITE_STATUS,
   ROLE_PERMISSIONS,
   SESSION_STATUS,
-  isConsumedStatus,
-  isTerminalStatus,
+  isTimeLimitedPolicy,
   type SessionStatus,
 } from "../shared";
 import { writeAnalyticsEvent, writeAuditEvent } from "../lib/audit";
@@ -17,6 +16,11 @@ import { writePresentationActivity } from "../lib/presentationActivity";
 import { logUnexpectedException } from "../lib/diagnostics";
 import { hashToken } from "../lib/crypto";
 import { auth, db } from "../lib/firebase";
+import {
+  genericAccessUnavailableMessage,
+  sessionIsExpired,
+  sessionSingleViewBlocked,
+} from "../lib/presentationPolicy";
 import { clientIpFromRequest, parseUserAgent } from "../lib/ua";
 
 interface ExchangeRequest {
@@ -86,7 +90,7 @@ export const exchangeInviteToken = onCall(async (request) => {
   const session = sessionSnap.data()!;
   const status = session.status as SessionStatus;
 
-  if (isConsumedStatus(status) || invite.status === INVITE_STATUS.COMPLETED) {
+  if (sessionSingleViewBlocked(session)) {
     logger.info("invite_exchange_failed", {
       reason: "already_viewed",
       inviteId: inviteDoc.id,
@@ -108,17 +112,17 @@ export const exchangeInviteToken = onCall(async (request) => {
       inviteId: inviteDoc.id,
       companyId: (session.companyId as string) || null,
       representativeId: (session.representativeId as string) || null,
-      type: ACTIVITY_EVENT.SECOND_VIEWING_ATTEMPT,
+      type: ACTIVITY_EVENT.ACCESS_DENIED,
       severity: ACTIVITY_SEVERITY.ERROR,
-      description: "A second viewing was attempted after completion.",
-      errorCode: "already_viewed",
+      description: "Access denied — viewing entitlement already consumed.",
+      errorCode: "viewing_entitlement_consumed",
       env,
       ipAddress: ip,
       actorType: "client",
     });
     throw new HttpsError(
       "failed-precondition",
-      "This presentation has already been viewed. Please contact your representative.",
+      genericAccessUnavailableMessage(),
     );
   }
 
@@ -152,7 +156,10 @@ export const exchangeInviteToken = onCall(async (request) => {
     throw new HttpsError("failed-precondition", "This invitation has been revoked.");
   }
 
-  if (isTerminalStatus(status) || new Date(session.expiresAt).getTime() < Date.now()) {
+  if (
+    status === SESSION_STATUS.EXPIRED ||
+    sessionIsExpired(session)
+  ) {
     logger.info("invite_exchange_failed", {
       reason: "expired",
       inviteId: inviteDoc.id,
@@ -181,7 +188,7 @@ export const exchangeInviteToken = onCall(async (request) => {
       ipAddress: ip,
       actorType: "client",
     });
-    throw new HttpsError("failed-precondition", "This invitation has expired.");
+    throw new HttpsError("failed-precondition", genericAccessUnavailableMessage());
   }
 
   const leaseSnap = await db.collection("viewingLeases").doc(sessionId).get();
@@ -213,11 +220,14 @@ export const exchangeInviteToken = onCall(async (request) => {
   const clientUid = `client_${sessionId}`;
   try {
     const existing = await auth.getUser(clientUid);
-    if (existing.disabled) {
+    if (existing.disabled && !isTimeLimitedPolicy(session.accessPolicy)) {
       throw new HttpsError(
         "failed-precondition",
-        "This presentation has already been viewed. Please contact your representative.",
+        genericAccessUnavailableMessage(),
       );
+    }
+    if (existing.disabled && isTimeLimitedPolicy(session.accessPolicy)) {
+      await auth.updateUser(clientUid, { disabled: false });
     }
   } catch (err) {
     if (err instanceof HttpsError) throw err;
@@ -278,6 +288,25 @@ export const exchangeInviteToken = onCall(async (request) => {
     updatedAt: openedAt,
     updatedAtServer: FieldValue.serverTimestamp(),
   };
+  const reopening =
+    isTimeLimitedPolicy(session.accessPolicy) &&
+    (status === SESSION_STATUS.COMPLETED || status === SESSION_STATUS.CLOSED);
+  if (reopening) {
+    updates.status = SESSION_STATUS.LEGAL_ACCEPTED;
+    await writePresentationActivity({
+      sessionId,
+      inviteId: inviteDoc.id,
+      companyId: (session.companyId as string) || null,
+      representativeId: (session.representativeId as string) || null,
+      type: ACTIVITY_EVENT.PRESENTATION_REOPENED,
+      severity: ACTIVITY_SEVERITY.INFO,
+      description: "Client reopened a time-limited presentation during the availability window.",
+      env,
+      ipAddress: ip,
+      actorType: "client",
+      actorUid: clientUid,
+    });
+  }
   if (status === SESSION_STATUS.PENDING) {
     updates.status = SESSION_STATUS.OPENED;
     updates["analytics.invitationOpenedAt"] = openedAt;

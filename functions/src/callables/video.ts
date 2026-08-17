@@ -14,7 +14,7 @@ import {
   SESSION_STATUS,
   SIGNED_URL_TTL_MS,
   VIDEO_COMPLETION_THRESHOLD,
-  isConsumedStatus,
+  isTimeLimitedPolicy,
   type SessionStatus,
 } from "../shared";
 import { requireClientSession } from "../lib/authz";
@@ -27,10 +27,14 @@ import { clientIpFromRequest, parseUserAgent } from "../lib/ua";
 import {
   acquireOrRenewLease,
   assertLeaseAllowsDevice,
-  assertSessionNotConsumed,
+  assertSessionAccessible,
   markLeaseConsumed,
   renewLease,
 } from "../lib/viewingLease";
+import {
+  genericAccessUnavailableMessage,
+  sessionIsExpired,
+} from "../lib/presentationPolicy";
 
 async function loadEligibleSession(sessionId: string, deviceId: string) {
   if (!deviceId || deviceId.length < 8) {
@@ -41,13 +45,23 @@ async function loadEligibleSession(sessionId: string, deviceId: string) {
   if (!sessionSnap.exists) throw new HttpsError("not-found", "Session not found.");
   const session = sessionSnap.data()!;
   const status = session.status as SessionStatus;
-  assertSessionNotConsumed(status);
 
-  if (status === SESSION_STATUS.REVOKED || status === SESSION_STATUS.EXPIRED) {
-    throw new HttpsError("failed-precondition", "This invitation is no longer available.");
+  if (sessionIsExpired(session)) {
+    throw new HttpsError("failed-precondition", genericAccessUnavailableMessage());
   }
 
+  assertSessionAccessible(session);
+
+  if (status === SESSION_STATUS.REVOKED || status === SESSION_STATUS.EXPIRED) {
+    throw new HttpsError("failed-precondition", genericAccessUnavailableMessage());
+  }
+
+  const replayAllowed =
+    isTimeLimitedPolicy(session.accessPolicy) &&
+    (status === SESSION_STATUS.COMPLETED || status === SESSION_STATUS.CLOSED);
+
   if (
+    !replayAllowed &&
     status !== SESSION_STATUS.LEGAL_ACCEPTED &&
     status !== SESSION_STATUS.IN_PROGRESS
   ) {
@@ -57,7 +71,7 @@ async function loadEligibleSession(sessionId: string, deviceId: string) {
     );
   }
 
-  if (!session.legalAcceptanceId) {
+  if (!replayAllowed && !session.legalAcceptanceId) {
     throw new HttpsError("failed-precondition", "Legal acceptance record missing.");
   }
 
@@ -401,30 +415,57 @@ async function finalizeCompletion(input: {
   maxWatchedSeconds: number;
 }) {
   const { sessionRef, session, sessionId, videoId, uid, ip } = input;
-  assertSessionNotConsumed(session.status as SessionStatus);
+  const timeLimited = isTimeLimitedPolicy(session.accessPolicy);
+
+  if (!timeLimited) {
+    assertSessionAccessible(session);
+  }
 
   const completedAt = new Date().toISOString();
 
   await db.runTransaction(async (tx) => {
     const fresh = await tx.get(sessionRef);
     const status = fresh.data()?.status as SessionStatus | undefined;
-    if (!status || isConsumedStatus(status)) return;
+    if (!status) return;
+    if (!timeLimited && (status === SESSION_STATUS.COMPLETED || status === SESSION_STATUS.CLOSED)) {
+      return;
+    }
     tx.update(sessionRef, {
       status: SESSION_STATUS.COMPLETED,
       completedAt,
       closedAt: completedAt,
       completionPercent: input.completionPercent,
       maxWatchedSeconds: input.maxWatchedSeconds,
+      viewingEntitlementConsumed: timeLimited ? false : true,
       "analytics.completionPercent": input.completionPercent,
       "analytics.completionTime": completedAt,
       "analytics.watchDurationMs": Math.round(input.maxWatchedSeconds * 1000),
       updatedAt: completedAt,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
-    tx.update(db.collection("invites").doc(session.inviteId), {
-      status: INVITE_STATUS.COMPLETED,
-    });
+    if (!timeLimited) {
+      tx.update(db.collection("invites").doc(session.inviteId), {
+        status: INVITE_STATUS.COMPLETED,
+      });
+    }
   });
+
+  if (timeLimited) {
+    await writePresentationActivity({
+      sessionId,
+      inviteId: session.inviteId,
+      companyId: (session.companyId as string) || null,
+      representativeId: session.representativeId,
+      type: ACTIVITY_EVENT.PRESENTATION_COMPLETED,
+      severity: ACTIVITY_SEVERITY.SUCCESS,
+      description: "Presentation viewing completed (replay still available until expiration).",
+      ipAddress: ip,
+      actorType: "client",
+      actorUid: uid,
+      payload: { completedAt, videoId },
+    });
+    return;
+  }
 
   await markLeaseConsumed(sessionId);
 
@@ -455,6 +496,18 @@ async function finalizeCompletion(input: {
     actorUid: uid,
     actorType: "client",
     ipAddress: ip,
+    payload: { completedAt, videoId },
+  });
+  await writePresentationActivity({
+    sessionId,
+    inviteId: session.inviteId,
+    companyId: (session.companyId as string) || null,
+    representativeId: session.representativeId,
+    type: ACTIVITY_EVENT.VIEWING_ENTITLEMENT_CONSUMED,
+    severity: ACTIVITY_SEVERITY.INFO,
+    description: "Single-viewing entitlement consumed after successful completion.",
+    ipAddress: ip,
+    actorType: "system",
     payload: { completedAt, videoId },
   });
   await writePresentationActivity({

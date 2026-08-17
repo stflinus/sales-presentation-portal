@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { doc, onSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { SESSION_STATUS, type PresentationSession } from "@spp/shared";
+import { SESSION_STATUS, ACCESS_POLICY, type PresentationSession } from "@spp/shared";
 import { db, functions } from "@/lib/firebase";
 import { getOrCreateDeviceId } from "@/lib/deviceId";
 import {
@@ -109,23 +109,39 @@ export function ClientPresentationPage() {
   const step: Step = useMemo(() => {
     if (error && !session) return "error";
     if (!session) return "loading";
+
+    const timeLimited = session.accessPolicy === ACCESS_POLICY.TIME_LIMITED;
+    const expired =
+      session.status === SESSION_STATUS.EXPIRED ||
+      session.status === SESSION_STATUS.REVOKED ||
+      (session.expiresAt && new Date(session.expiresAt).getTime() < Date.now());
+
+    if (expired) return "blocked";
+
     if (
-      session.status === SESSION_STATUS.COMPLETED ||
-      session.status === SESSION_STATUS.CLOSED
+      !timeLimited &&
+      (session.status === SESSION_STATUS.COMPLETED ||
+        session.status === SESSION_STATUS.CLOSED)
     ) {
       return "done";
     }
+
     if (
       session.status === SESSION_STATUS.REVOKED ||
       session.status === SESSION_STATUS.EXPIRED
     ) {
       return "blocked";
     }
-    if (session.status === SESSION_STATUS.IN_PROGRESS) {
-      // Resume mid-viewing — go straight to player once started/prepared.
+
+    if (timeLimited && session.legalAcceptanceId) {
       if (started && videoUrl) return "video";
       if (started || preparing) return "preparing";
-      // Auto-resume in-progress sessions into ready/player path.
+      return "ready";
+    }
+
+    if (session.status === SESSION_STATUS.IN_PROGRESS) {
+      if (started && videoUrl) return "video";
+      if (started || preparing) return "preparing";
       return started ? "preparing" : "ready";
     }
     if (session.status === SESSION_STATUS.LEGAL_ACCEPTED) {

@@ -1,4 +1,4 @@
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue } from "firebase-admin/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import {
   ACTIVITY_EVENT,
@@ -23,8 +23,13 @@ import { generateInviteToken, hashToken } from "../lib/crypto";
 import { db } from "../lib/firebase";
 import { resolveAppOrigin } from "../lib/appOrigin";
 import { assertProductionContentReady } from "../lib/productionContent";
-import { getActiveVideoForCompany, getPortalSettings } from "../lib/settings";
+import {
+  expiresAtTimestamp,
+  resolveInvitationPolicy,
+} from "../lib/presentationPolicy";
+import { getCompany, getPortalSettings } from "../lib/settings";
 import { clientIpFromRequest } from "../lib/ua";
+import { accessPolicySummary } from "../shared";
 
 interface CreateInviteRequest {
   /** Existing contact — preferred. */
@@ -54,10 +59,16 @@ export const createInvite = onCall(async (request) => {
   }
   const companyId = resolveActingCompanyId(ctx, requestedCompanyId);
   await assertProductionContentReady(companyId);
-  const { id: videoId, company } = await getActiveVideoForCompany(companyId);
+  const policy = await resolveInvitationPolicy({
+    profile: ctx.profile,
+    companyId,
+  });
+  const videoId = policy.videoId;
+  const expiresAt = expiresAtTimestamp(policy.expiresAt);
 
   const uid = ctx.uid;
   const nowIso = new Date().toISOString();
+
 
   if (contactId) {
     const contactSnap = await db.collection("contacts").doc(contactId).get();
@@ -141,8 +152,6 @@ export const createInvite = onCall(async (request) => {
   const representativeTitle = String(ctx.profile.title || "").trim() || null;
   const representativePhone = String(ctx.profile.phone || "").trim() || null;
 
-  const ttlHours = company.defaultInviteTtlHours || 168;
-  const expiresAt = Timestamp.fromMillis(Date.now() + ttlHours * 60 * 60 * 1000);
   const token = generateInviteToken();
   const tokenHash = hashToken(token);
 
@@ -156,6 +165,7 @@ export const createInvite = onCall(async (request) => {
     );
   }
   const inviteUrl = `${origin}/i/${token}`;
+  const company = await getCompany(companyId);
   const companyName =
     String(company.displayEmailName || company.name || "").trim() ||
     "Presentation Hub";
@@ -172,11 +182,15 @@ export const createInvite = onCall(async (request) => {
     clientName,
     clientEmail,
     status: INVITE_STATUS.PENDING,
-    expiresAt: expiresAt.toDate().toISOString(),
+    expiresAt: policy.expiresAt,
     sessionId: sessionRef.id,
     videoId,
     companyId,
     contactId,
+    accessPolicy: policy.accessPolicy,
+    accessDurationDays: policy.accessDurationDays,
+    policyAppliedAt: policy.policyAppliedAt,
+    viewingEntitlementConsumed: false,
     createdAt: nowIso,
     sentAt: null as string | null,
     lastNotificationId: null as string | null,
@@ -198,7 +212,7 @@ export const createInvite = onCall(async (request) => {
     contactId,
     maxWatchedSeconds: 0,
     completionPercent: 0,
-    expiresAt: expiresAt.toDate().toISOString(),
+    expiresAt: policy.expiresAt,
     representativeNotes: "",
     followUpStatus: FOLLOWUP_STATUS.NONE,
     followUpAt: null as string | null,
@@ -212,6 +226,10 @@ export const createInvite = onCall(async (request) => {
     healthStatus: "healthy" as const,
     healthSummary: "No issues detected.",
     healthUpdatedAt: nowIso,
+    accessPolicy: policy.accessPolicy,
+    accessDurationDays: policy.accessDurationDays,
+    policyAppliedAt: policy.policyAppliedAt,
+    viewingEntitlementConsumed: false,
     analytics: {
       representativeId: uid,
       videoVersionId: videoId,
@@ -252,7 +270,7 @@ export const createInvite = onCall(async (request) => {
     actorUid: uid,
     actorType: "representative",
     ipAddress: ip,
-    payload: { clientName, clientEmail, videoId, companyId, contactId },
+    payload: { clientName, clientEmail, videoId, companyId, contactId, accessPolicy: policy.accessPolicy },
   });
 
   await writePresentationActivity({
@@ -266,7 +284,25 @@ export const createInvite = onCall(async (request) => {
     ipAddress: ip,
     actorType: "representative",
     actorUid: uid,
-    payload: { videoId, contactId },
+    payload: { videoId, contactId, accessPolicy: policy.accessPolicy },
+  });
+
+  await writePresentationActivity({
+    sessionId: sessionRef.id,
+    inviteId: inviteRef.id,
+    companyId,
+    representativeId: uid,
+    type: ACTIVITY_EVENT.PRESENTATION_POLICY_APPLIED,
+    severity: ACTIVITY_SEVERITY.INFO,
+    description: `Assigned video and ${accessPolicySummary(policy.accessPolicy, policy.accessDurationDays)} policy snapshotted for this invitation.`,
+    ipAddress: ip,
+    actorType: "system",
+    payload: {
+      videoId,
+      accessPolicy: policy.accessPolicy,
+      accessDurationDays: policy.accessDurationDays,
+      expiresAt: policy.expiresAt,
+    },
   });
 
   /**
