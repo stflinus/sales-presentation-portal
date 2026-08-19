@@ -6,6 +6,10 @@ import {
   normalizeAccessPolicy,
 } from "../../packages/shared/src/accessPolicy";
 import {
+  PERMISSIONS as PERMS,
+  ROLE_PERMISSIONS as ROLES,
+} from "../../packages/shared/src/permissions";
+import {
   sessionIsExpired,
   sessionSingleViewBlocked,
 } from "../../functions/src/lib/presentationPolicy.pure";
@@ -104,6 +108,15 @@ describe("session access enforcement", () => {
         status: "completed",
       }),
     ).toBe(true);
+  });
+});
+
+describe("platform presentation policy permission", () => {
+  it("is granted only to platform administrator and owner roles", () => {
+    expect(ROLES.administrator).toContain(PERMS.PRESENTATION_POLICIES_MANAGE);
+    expect(ROLES.owner).toContain(PERMS.PRESENTATION_POLICIES_MANAGE);
+    expect(ROLES.representative).not.toContain(PERMS.PRESENTATION_POLICIES_MANAGE);
+    expect(ROLES.manager).not.toContain(PERMS.PRESENTATION_POLICIES_MANAGE);
   });
 });
 

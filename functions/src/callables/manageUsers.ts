@@ -11,6 +11,8 @@ import {
 } from "../shared";
 import {
   assertHasPermission,
+  assertPresentationPoliciesManage,
+  canManagePresentationPolicies,
   loadStaffContext,
   permissionsForRole,
   resolveActingCompanyId,
@@ -136,6 +138,8 @@ export const listStaffUsers = onCall(async (request) => {
     .filter((u) => String(u.primaryRole || "") !== ROLE_IDS.CLIENT)
     .sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
 
+  const canEnrichPresentation = canManagePresentationPolicies(ctx);
+
   const videoIds = [
     ...new Set(
       users
@@ -143,22 +147,51 @@ export const listStaffUsers = onCall(async (request) => {
         .filter(Boolean),
     ),
   ];
+  const companyIds = [
+    ...new Set(
+      users
+        .map((u) => String(u.companyId || "").trim())
+        .filter(Boolean),
+    ),
+  ];
   const videoTitles = new Map<string, string>();
-  await Promise.all(
-    videoIds.map(async (id) => {
-      const snap = await db.collection("videos").doc(id).get();
-      if (snap.exists) {
-        videoTitles.set(id, String(snap.data()?.title || id));
-      }
-    }),
-  );
+  const companyDefaultVideos = new Map<string, { id: string; title: string }>();
+
+  if (canEnrichPresentation) {
+    await Promise.all([
+      ...videoIds.map(async (id) => {
+        const snap = await db.collection("videos").doc(id).get();
+        if (snap.exists) {
+          videoTitles.set(id, String(snap.data()?.title || id));
+        }
+      }),
+      ...companyIds.map(async (companyId) => {
+        const companySnap = await db.collection("companies").doc(companyId).get();
+        const activeVideoId = String(companySnap.data()?.activeVideoId || "").trim();
+        if (!activeVideoId) return;
+        const vSnap = await db.collection("videos").doc(activeVideoId).get();
+        companyDefaultVideos.set(companyId, {
+          id: activeVideoId,
+          title: vSnap.exists
+            ? String(vSnap.data()?.title || activeVideoId)
+            : activeVideoId,
+        });
+      }),
+    ]);
+  }
 
   const enriched = users.map((u) => {
+    if (!canEnrichPresentation) {
+      return u;
+    }
     const ps = u.presentationSettings as Record<string, unknown> | null;
     const activeVideoId = String(ps?.activeVideoId || "").trim();
+    const companyDefault = u.companyId
+      ? companyDefaultVideos.get(String(u.companyId))
+      : null;
     const videoTitle = activeVideoId
       ? videoTitles.get(activeVideoId) || activeVideoId
-      : "Company default";
+      : companyDefault?.title || "Company default";
     const accessLabel = accessPolicySummary(
       ps?.accessPolicy as string | null | undefined,
       ps?.accessDurationDays as number | null | undefined,
@@ -172,13 +205,10 @@ export const listStaffUsers = onCall(async (request) => {
   return { users: enriched };
 });
 
-/** Platform admin: read presentation settings + selectable videos for a staff user. */
+/** Platform owner/admin: read presentation settings + selectable videos for a staff user. */
 export const getStaffPresentationSettings = onCall(async (request) => {
   const ctx = await loadStaffContext(request);
-  assertHasPermission(ctx, PERMISSIONS.USERS_MANAGE);
-  if (!ctx.isPlatformAdmin) {
-    throw new HttpsError("permission-denied", "Platform administrator required.");
-  }
+  assertPresentationPoliciesManage(ctx);
 
   const targetUid = String(request.data?.uid || "").trim();
   if (!targetUid) throw new HttpsError("invalid-argument", "uid required.");
@@ -207,13 +237,10 @@ export const getStaffPresentationSettings = onCall(async (request) => {
   };
 });
 
-/** Platform admin: update per-user presentation video & access policy. */
+/** Platform owner/admin: update per-user presentation video & access policy. */
 export const updateStaffPresentationSettings = onCall(async (request) => {
   const ctx = await loadStaffContext(request);
-  assertHasPermission(ctx, PERMISSIONS.USERS_MANAGE);
-  if (!ctx.isPlatformAdmin) {
-    throw new HttpsError("permission-denied", "Platform administrator required.");
-  }
+  assertPresentationPoliciesManage(ctx);
 
   const targetUid = String(request.data?.uid || "").trim();
   if (!targetUid) throw new HttpsError("invalid-argument", "uid required.");

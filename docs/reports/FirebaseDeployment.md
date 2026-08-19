@@ -4,54 +4,34 @@
 
 **DEPLOYED** — https://presentationhub.web.app
 
-Platform administrators can configure per-staff presentation video and access policy. New invitations snapshot these settings; existing invitations are unaffected.
+Platform owners/administrators configure per-representative presentation video and access policy from **Admin → Users → Presentation Access**. New invitations snapshot settings; existing invitations are unaffected.
 
 ---
 
-## Architecture Discovered (pre-change)
+## Correction (Aug 17, 2026)
 
-| Area | Existing behavior |
-|------|-------------------|
-| **User profile** | `users/{uid}` — email, role, company; no presentation settings |
-| **Video selection** | `createInvite` used `getActiveVideoForCompany(companyId)` from company `activeVideoId` |
-| **Expiration** | `company.defaultInviteTtlHours` (default 168h) on invite + session at creation |
-| **One-time viewing** | `viewingLeases`, `finalizeCompletion` — disables auth, marks lease consumed, sets `viewingEntitlementConsumed` |
-| **Admin users** | `UsersPage` / `manageUsers` callables — staff CRUD only |
-| **Legal evidence** | Independent immutable records; not tied to operational policy changes |
-| **Activity/Health** | Presentation activity log with admin diagnostics |
+The initial deployment included backend support but the Users UI was gated incorrectly and not reliably visible. This correction:
+
+1. Introduced dedicated permission `presentation_policies:manage` (platform owner/administrator roles only).
+2. Fixed UI gating to use that permission instead of generic `users:manage`.
+3. Fixed representative row detection — controls show for **representative** and **manager** roles (not blocked by missing optional fields).
+4. Added visible **Presentation Access** action button, modal editor, and compact **Presentation** column.
+5. Updated `syncClaims` to union role permissions with stored permissions so new platform permissions propagate on sign-in.
+6. Deployed hosting + functions to production.
+
+**Platform owner action required once:** Sign out and sign back in so `syncClaims` refreshes JWT with `presentation_policies:manage`.
 
 ---
 
-## Schema Changes
+## Architecture
 
-### User profile (`users/{uid}`)
-
-Optional field:
-
-```typescript
-presentationSettings?: {
-  activeVideoId?: string | null;   // null → company default video
-  accessPolicy?: AccessPolicy;     // default: single_view
-  accessDurationDays?: number | null; // 1–365, default 7 when policy needs days
-}
-```
-
-No migration required. Users without this field retain company-default video + single-view + company TTL.
-
-### Invite + session snapshot (at creation)
-
-Both `invites/{id}` and `presentationSessions/{id}` store:
-
-| Field | Purpose |
-|-------|---------|
-| `videoId` | Snapshotted video (already existed) |
-| `accessPolicy` | `single_view` \| `time_limited` \| `single_view_with_expiration` |
-| `accessDurationDays` | Days for time-limited policies (null for pure single-view) |
-| `expiresAt` | Computed deadline (company TTL for single-view; days × 24h for others) |
-| `policyAppliedAt` | ISO timestamp when policy was snapshotted |
-| `viewingEntitlementConsumed` | Boolean; set true after successful single-view completion |
-
-Existing records without `accessPolicy` are treated as `single_view` (backward compatible).
+| Area | Behavior |
+|------|----------|
+| **User profile** | Optional `presentationSettings` on `users/{uid}` |
+| **Video selection** | `resolveInvitationPolicy` — user settings or company default |
+| **Invitation snapshot** | `videoId`, `accessPolicy`, `accessDurationDays`, `expiresAt`, `policyAppliedAt`, `viewingEntitlementConsumed` |
+| **Authorization** | `presentation_policies:manage` — owner/administrator roles only; server-enforced on callables |
+| **Firestore rules** | `users` writes blocked (`allow write: if false`) — policy changes via Cloud Functions only |
 
 ---
 
@@ -59,101 +39,48 @@ Existing records without `accessPolicy` are treated as `single_view` (backward c
 
 | Policy | Behavior |
 |--------|----------|
-| **Single Viewing** (`single_view`) | Existing production behavior preserved. One successful viewing; failed loads do not consume entitlement. |
-| **Available for a Set Period** (`time_limited`) | Replay allowed while `now < expiresAt`. Completion does not consume entitlement or disable auth. Legal acceptance not re-required on reopen. |
-| **Single View + Expiration** (`single_view_with_expiration`) | Single-view rules AND expires after N days if unused. Whichever blocks first wins. |
+| **Single Viewing** | Existing one-time viewing (default / backward compatible) |
+| **Time-Limited Access** | Replay until `expiresAt`; completion does not consume entitlement |
+| **Single View + Expiration** | One successful view OR expires after N days if unused |
 
-Client-facing denial message (generic):
+Generic client denial: *"This presentation is no longer available. Please contact your representative for assistance."*
 
-> This presentation is no longer available. Please contact your representative for assistance.
-
-Internal policy details are never shown to clients.
+Invalid/deactivated assigned video blocks **new** invite creation with: *"Your presentation configuration requires administrator attention. Please contact your administrator."* (admin audit log retains detail).
 
 ---
 
-## Implementation
+## Admin UI — Users Page
 
-### Shared types
+Each representative/manager row shows:
 
-- `packages/shared/src/accessPolicy.ts` — policy constants, validation, admin labels
-- `packages/shared/src/models.ts` — `UserProfile.presentationSettings`, invite/session snapshot fields
-- `packages/shared/src/activity.ts` — `PRESENTATION_POLICY_APPLIED`, `PRESENTATION_REOPENED`, `VIEWING_ENTITLEMENT_CONSUMED`, `ACCESS_DENIED`
+- **Presentation** column: video title + access summary (compact; responsive on tablet/mobile)
+- **Presentation Access** button → modal with:
+  - Assigned video (active Video Library dropdown)
+  - Access policy (Single Viewing / Time-Limited Access / Single View + Expiration)
+  - Duration days when applicable
+  - Cancel / Save Changes
 
-### Backend
-
-- `functions/src/lib/presentationPolicy.ts` — `resolveInvitationPolicy`, admin validation, video listing
-- `functions/src/lib/presentationPolicy.pure.ts` — pure session access helpers (testable)
-- `functions/src/callables/createInvite.ts` — resolves user policy, snapshots onto invite + session
-- `functions/src/callables/exchangeInvite.ts` — policy-aware expired/consumed checks; TIME_LIMITED reopen
-- `functions/src/callables/video.ts` — TIME_LIMITED completion without entitlement consume; replay path
-- `functions/src/callables/legal.ts` — allows TIME_LIMITED replay past COMPLETED status
-- `functions/src/lib/viewingLease.ts` — `assertSessionAccessible` with generic messaging
-- `functions/src/callables/manageUsers.ts` — `getStaffPresentationSettings`, `updateStaffPresentationSettings` (platform admin only)
-
-### Admin UI
-
-- `src/modules/admin/UsersPage.tsx` — Presentation column summary; Edit Presentation Settings panel (video dropdown, access method, days)
-
-### Representative workflow
-
-Unchanged — create invitation as before. Video and policy applied automatically from admin configuration.
+Representatives and managers cannot see or modify these controls.
 
 ---
 
-## Backward Compatibility
+## Key Files
 
-- Existing users: no `presentationSettings` → company default video + single-view + company TTL
-- Existing invitations: missing `accessPolicy` → treated as single-view; behavior unchanged
-- Changing user settings affects **new invitations only** — snapshots are authoritative
-- If assigned video becomes unavailable, new invite creation fails with friendly message to contact administrator; existing invitations keep snapshotted video where technically possible
-
----
-
-## Access-Control Enforcement
-
-| Action | Who |
-|--------|-----|
-| View presentation settings summary | Platform admin (`users:manage` + platform admin role) |
-| Edit presentation settings | Platform admin only — server-side enforced |
-| Representatives / company managers | Cannot modify own or others' presentation policy |
+- `packages/shared/src/permissions.ts` — `PRESENTATION_POLICIES_MANAGE`
+- `packages/shared/src/accessPolicy.ts` — policy types & validation
+- `functions/src/lib/presentationPolicy.ts` — resolve, validate, enforce
+- `functions/src/callables/manageUsers.ts` — get/update presentation settings callables
+- `functions/src/callables/createInvite.ts` — policy snapshot at creation
+- `functions/src/lib/authz.ts` — `syncClaims` permission union
+- `src/modules/admin/UsersPage.tsx` — Presentation Access UI
 
 ---
 
-## Activity / Diagnostics Events
+## Tests
 
-- `presentation_policy_applied` — at invitation creation (video, policy, expiration)
-- `presentation_reopened` — TIME_LIMITED client reopen during availability window
-- `viewing_entitlement_consumed` — single-view successful completion
-- `access_denied` — entitlement consumed or policy block
-- `invitation_expired` — client attempt after expiration
-
-No invitation tokens or secrets logged.
-
----
-
-## Tests Performed
-
-Unit tests (`tests/unit/presentationPolicy.test.ts`):
-
-1. Policy normalization defaults to single-view
-2. Duration clamping (min 1, max 365, default 7)
-3. Access policy summaries for admin UI
-4. Single-view blocks completed sessions
-5. Time-limited allows completed session replay
-6. Single-view+expiration blocks consumed entitlement
-7. Expiration detection from `expiresAt`
-8. Missing `accessPolicy` treated as single-view (backward compat)
-9. Snapshot immutability (invitation fields independent of user profile)
-
-Full suite: **72 tests passed** (`npm test`).
-
-Build: `npm run build:functions && npm run build` — success.
-
----
-
-## Migration
-
-None. Optional `presentationSettings` on user documents; snapshot fields added only on new invitations.
+- **73 unit tests passing** (`npm test`)
+- New: platform permission granted only to owner/administrator roles
+- Policy normalization, duration validation, session enforcement, snapshot immutability
 
 ---
 
@@ -163,14 +90,25 @@ None. Optional `presentationSettings` on user documents; snapshot fields added o
 npm run deploy:all
 ```
 
-- New functions: `getStaffPresentationSettings`, `updateStaffPresentationSettings`
-- Updated: `createInvite`, `exchangeInviteToken`, video/legal/manageUsers callables, hosting
+Hosting bundle verified live: `assets/index-CdiGJt0W.js` contains `Presentation Access` and `presentation_policies:manage`.
+
+---
+
+## Verification Checklist
+
+| Item | Status |
+|------|--------|
+| Presentation Access UI in production bundle | PASS |
+| Platform-owner permission RBAC | PASS |
+| Server-side callable enforcement | PASS |
+| Invitation policy snapshot | PASS |
+| Backward compatibility (no migration) | PASS |
+| Full interactive E2E (login as owner → configure Dan → create invite) | Requires owner re-login + manual QA |
 
 ---
 
 ## Remaining Concerns
 
-- Representative `title` / `phone` for invitation email still depend on profile fields (unchanged).
-- App Check not enabled in `.env` (pre-existing warning).
-- TIME_LIMITED replay skips re-legal acceptance by design — legal evidence from first acceptance preserved.
-- Manual end-to-end verification of all policy scenarios in production UI recommended after first admin configuration.
+- Platform owner must **re-login once** after deploy to receive `presentation_policies:manage` in JWT claims.
+- App Check not enabled (pre-existing warning).
+- Manual end-to-end verification of time-limited replay and single-view paths recommended after configuring a test representative.

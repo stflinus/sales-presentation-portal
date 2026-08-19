@@ -25,6 +25,7 @@ import { resolveAppOrigin } from "../lib/appOrigin";
 import { assertProductionContentReady } from "../lib/productionContent";
 import {
   expiresAtTimestamp,
+  REP_PRESENTATION_CONFIG_ERROR,
   resolveInvitationPolicy,
 } from "../lib/presentationPolicy";
 import { getCompany, getPortalSettings } from "../lib/settings";
@@ -59,10 +60,28 @@ export const createInvite = onCall(async (request) => {
   }
   const companyId = resolveActingCompanyId(ctx, requestedCompanyId);
   await assertProductionContentReady(companyId);
-  const policy = await resolveInvitationPolicy({
-    profile: ctx.profile,
-    companyId,
-  });
+  let policy;
+  try {
+    policy = await resolveInvitationPolicy({
+      profile: ctx.profile,
+      companyId,
+    });
+  } catch (err) {
+    if (err instanceof HttpsError && err.code === "failed-precondition") {
+      await writeAuditEvent({
+        type: AUDIT_EVENT.REPRESENTATIVE_ACTION,
+        actorUid: ctx.uid,
+        actorType: "representative",
+        payload: {
+          action: "invite_blocked_presentation_config",
+          companyId,
+          reason: err.message,
+        },
+      });
+      throw new HttpsError("failed-precondition", REP_PRESENTATION_CONFIG_ERROR);
+    }
+    throw err;
+  }
   const videoId = policy.videoId;
   const expiresAt = expiresAtTimestamp(policy.expiresAt);
 

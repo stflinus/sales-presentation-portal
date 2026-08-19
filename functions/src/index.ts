@@ -23,6 +23,7 @@ export {
   archiveVideo,
   deleteVideo,
   getAdminVideoPreviewUrl,
+  updateVideoMetadata,
 } from "./callables/manageVideos";
 export { resetInterruptedSession } from "./callables/resetSession";
 export { validateProductionReadiness } from "./callables/validateProduction";

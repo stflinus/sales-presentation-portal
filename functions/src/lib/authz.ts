@@ -1,3 +1,4 @@
+import { FieldValue } from "firebase-admin/firestore";
 import { HttpsError, type CallableRequest } from "firebase-functions/v2/https";
 import {
   PERMISSIONS,
@@ -92,6 +93,23 @@ export function assertHasPermission(
   }
 }
 
+/** Platform owner/administrator — per-rep presentation video & access policy. */
+export function canManagePresentationPolicies(ctx: StaffContext): boolean {
+  return (
+    ctx.permissions.includes(PERMISSIONS.PRESENTATION_POLICIES_MANAGE) ||
+    isPlatformAdminRole(ctx.rolePrimary)
+  );
+}
+
+export function assertPresentationPoliciesManage(ctx: StaffContext): void {
+  if (!canManagePresentationPolicies(ctx)) {
+    throw new HttpsError(
+      "permission-denied",
+      "Missing presentation policy management permission.",
+    );
+  }
+}
+
 /**
  * Resolve the company the caller may act on.
  * Platform admins may pass companyId; others must use their assigned company.
@@ -171,25 +189,33 @@ export async function syncUserClaims(uid: string): Promise<string[]> {
   }
   const roleIds = (data.roleIds as RoleId[]) ?? [];
   const permissionSet = new Set<string>();
-
-  // Explicit stored permissions take precedence when present.
-  const stored = (data.permissions as string[] | undefined) || [];
-  if (stored.length > 0) {
-    stored.forEach((p) => permissionSet.add(p));
-  } else {
-    for (const roleId of roleIds) {
-      const fromDb = await db.collection("roles").doc(roleId).get();
-      const perms =
-        (fromDb.data()?.permissions as string[] | undefined) ??
-        ROLE_PERMISSIONS[roleId] ??
-        [];
-      perms.forEach((p) => permissionSet.add(p));
-    }
-  }
-
-  const permissions = Array.from(permissionSet);
   const rolePrimary =
     (data.primaryRole as RoleId) || roleIds[0] || ROLE_IDS.REPRESENTATIVE;
+  const rolesToApply = roleIds.length > 0 ? roleIds : [rolePrimary];
+
+  for (const roleId of rolesToApply) {
+    const codePerms = ROLE_PERMISSIONS[roleId] ?? [];
+    codePerms.forEach((p) => permissionSet.add(p));
+    if (codePerms.length > 0) {
+      await db.collection("roles").doc(roleId).set(
+        {
+          id: roleId,
+          name: roleId,
+          permissions: [...codePerms],
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+    const fromDb = await db.collection("roles").doc(roleId).get();
+    const dbPerms = (fromDb.data()?.permissions as string[] | undefined) ?? [];
+    dbPerms.forEach((p) => permissionSet.add(p));
+  }
+
+  const stored = (data.permissions as string[] | undefined) || [];
+  stored.forEach((p) => permissionSet.add(p));
+
+  const permissions = Array.from(permissionSet);
   const companyId = (data.companyId as string | null) ?? null;
 
   await auth.setCustomUserClaims(uid, {

@@ -738,6 +738,47 @@ th {
   align-items: center;
 }
 
+.presentation-access-modal {
+  width: min(520px, 100%);
+}
+
+.presentation-compact {
+  line-height: 1.35;
+  min-width: 7rem;
+}
+
+.presentation-inline-summary {
+  margin-top: 0.35rem;
+  line-height: 1.35;
+}
+
+.users-table .desktop-only {
+  display: table-cell;
+}
+
+.users-table .mobile-only {
+  display: none;
+}
+
+.user-row-actions {
+  min-width: 12rem;
+}
+
+@media (max-width: 900px) {
+  .users-table .desktop-only {
+    display: none;
+  }
+
+  .users-table .mobile-only {
+    display: block;
+  }
+
+  .user-row-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

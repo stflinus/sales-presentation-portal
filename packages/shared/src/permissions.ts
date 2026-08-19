@@ -31,6 +31,8 @@ export const PERMISSIONS = {
   LEGAL_EVIDENCE_READ_COMPANY: "legal_evidence:read_company",
   LEGAL_EVIDENCE_READ_ALL: "legal_evidence:read_all",
   LEGAL_EVIDENCE_EXPORT: "legal_evidence:export",
+  /** Platform owner/administrator — per-rep presentation video & access policy */
+  PRESENTATION_POLICIES_MANAGE: "presentation_policies:manage",
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -81,6 +83,7 @@ const PLATFORM_ADMIN_PERMISSIONS: readonly Permission[] = [
   PERMISSIONS.LEGAL_EVIDENCE_READ_COMPANY,
   PERMISSIONS.LEGAL_EVIDENCE_READ_ALL,
   PERMISSIONS.LEGAL_EVIDENCE_EXPORT,
+  PERMISSIONS.PRESENTATION_POLICIES_MANAGE,
 ];
 
 export const ROLE_PERMISSIONS: Record<RoleId, readonly Permission[]> = {

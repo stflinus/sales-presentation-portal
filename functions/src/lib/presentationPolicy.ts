@@ -16,6 +16,7 @@ import { getActiveVideoForCompany, getCompany } from "./settings";
 
 export {
   genericAccessUnavailableMessage,
+  REP_PRESENTATION_CONFIG_ERROR,
   sessionAccessPolicy,
   sessionIsExpired,
   sessionSingleViewBlocked,

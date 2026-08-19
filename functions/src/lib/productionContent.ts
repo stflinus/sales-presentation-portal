@@ -83,19 +83,34 @@ export async function assessContentReadinessForCompany(
     }
   }
 
-  const videoId = company.activeVideoId || "";
-  if (!videoId) {
-    missing.push("Active video (upload and activate in Video Library)");
-  } else {
-    const videoSnap = await db.collection("videos").doc(videoId).get();
+  let resolvedVideoId: string | null = null;
+  const configuredVideoId = company.activeVideoId || "";
+  if (configuredVideoId) {
+    const videoSnap = await db.collection("videos").doc(configuredVideoId).get();
     const data = videoSnap.data() as Record<string, unknown> | undefined;
-    if (!isUsableActiveVideo(data)) {
-      missing.push(
-        "Active video — upload an MP4 and Activate it in the Video Library",
-      );
-    } else if (data?.companyId && data.companyId !== companyId) {
-      missing.push("Active video — company mismatch");
+    if (
+      isUsableActiveVideo(data) &&
+      (!data?.companyId || data.companyId === companyId)
+    ) {
+      resolvedVideoId = configuredVideoId;
     }
+  }
+  if (!resolvedVideoId) {
+    const activeSnap = await db
+      .collection("videos")
+      .where("companyId", "==", companyId)
+      .where("status", "==", VIDEO_STATUS.ACTIVE)
+      .limit(20)
+      .get();
+    for (const doc of activeSnap.docs) {
+      if (isUsableActiveVideo(doc.data() as Record<string, unknown>)) {
+        resolvedVideoId = doc.id;
+        break;
+      }
+    }
+  }
+  if (!resolvedVideoId) {
+    missing.push("Active video (upload and activate at least one video in Video Library)");
   }
 
   return {
@@ -105,7 +120,7 @@ export async function assessContentReadinessForCompany(
     activeNdaId: company.activeNdaId,
     activeTermsId: company.activeTermsId,
     activePrivacyId: company.activePrivacyId,
-    activeVideoId: company.activeVideoId,
+    activeVideoId: resolvedVideoId || company.activeVideoId,
   };
 }
 

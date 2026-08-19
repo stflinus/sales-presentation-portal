@@ -1,4 +1,4 @@
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 import {
@@ -66,6 +66,46 @@ function assertNotDeleted(data: Record<string, unknown> | undefined) {
   if (!data || data.status === VIDEO_STATUS.DELETED || data.deleted === true) {
     throw new HttpsError("failed-precondition", "Video is deleted.");
   }
+}
+
+async function syncCompanyDefaultVideoId(
+  tx: Transaction,
+  companyId: string,
+  excludeVideoId?: string,
+): Promise<void> {
+  const companyRef = db.collection("companies").doc(companyId);
+  const companySnap = await tx.get(companyRef);
+  if (!companySnap.exists) return;
+  const current = String(companySnap.data()?.activeVideoId || "").trim();
+  if (current && current !== excludeVideoId) {
+    const currentSnap = await tx.get(db.collection("videos").doc(current));
+    const currentData = currentSnap.data();
+    if (
+      currentSnap.exists &&
+      currentData?.status === VIDEO_STATUS.ACTIVE &&
+      currentData?.active === true
+    ) {
+      return;
+    }
+  }
+  const activeSnap = await tx.get(
+    db
+      .collection("videos")
+      .where("companyId", "==", companyId)
+      .where("status", "==", VIDEO_STATUS.ACTIVE)
+      .limit(20),
+  );
+  const nextId =
+    activeSnap.docs.find((d) => d.id !== excludeVideoId)?.id ?? null;
+  tx.set(
+    companyRef,
+    {
+      activeVideoId: nextId || "",
+      updatedAt: new Date().toISOString(),
+      updatedAtServer: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
 }
 
 /** Create a draft video record and return the Storage path for client upload. */
@@ -323,30 +363,34 @@ export const activateVideo = onCall(async (request) => {
     if (data.archived === true || data.status === VIDEO_STATUS.ARCHIVED) {
       throw new HttpsError("failed-precondition", "Restore from archive is not supported; upload a new version.");
     }
-    if (!data.storagePath || data.fileSize == null) {
+    if (!data.storagePath) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Finalize the upload before activating.",
+      );
+    }
+    const fileSize = data.fileSize ?? data.sizeBytes;
+    if (fileSize == null || Number(fileSize) <= 0) {
       throw new HttpsError(
         "failed-precondition",
         "Finalize the upload before activating.",
       );
     }
 
-    const active = await tx.get(
-      db
-        .collection("videos")
-        .where("companyId", "==", company)
-        .where("status", "==", VIDEO_STATUS.ACTIVE)
-        .limit(20),
-    );
-    for (const docSnap of active.docs) {
-      if (docSnap.id === videoId) continue;
-      tx.update(docSnap.ref, {
-        status: VIDEO_STATUS.INACTIVE,
-        active: false,
-        allowExistingSessions: true,
-        deactivatedAt: nowIso,
-        replacementReason: replacementReason || "Replaced by newly activated video",
-        updatedAt: nowIso,
-      });
+    const companyRef = db.collection("companies").doc(company);
+    const companySnap = await tx.get(companyRef);
+    const currentDefault = String(companySnap.data()?.activeVideoId || "").trim();
+    let shouldSetDefault = !currentDefault;
+    if (currentDefault) {
+      const defaultSnap = await tx.get(db.collection("videos").doc(currentDefault));
+      const defaultData = defaultSnap.data();
+      if (
+        !defaultSnap.exists ||
+        defaultData?.status !== VIDEO_STATUS.ACTIVE ||
+        defaultData?.active !== true
+      ) {
+        shouldSetDefault = true;
+      }
     }
 
     tx.update(ref, {
@@ -361,20 +405,23 @@ export const activateVideo = onCall(async (request) => {
       updatedAt: nowIso,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
-    tx.set(
-      db.collection("settings").doc("portal"),
-      { activeVideoId: videoId, updatedAt: FieldValue.serverTimestamp() },
-      { merge: true },
-    );
-    tx.set(
-      db.collection("companies").doc(company),
-      {
-        activeVideoId: videoId,
-        updatedAt: nowIso,
-        updatedAtServer: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
+
+    if (shouldSetDefault) {
+      tx.set(
+        companyRef,
+        {
+          activeVideoId: videoId,
+          updatedAt: nowIso,
+          updatedAtServer: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      tx.set(
+        db.collection("settings").doc("portal"),
+        { activeVideoId: videoId, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+    }
   });
 
   const after = (await ref.get()).data()!;
@@ -419,6 +466,7 @@ export const deactivateVideo = onCall(async (request) => {
       throw new HttpsError("permission-denied", "Video belongs to another company.");
     }
     assertNotDeleted(data);
+    await syncCompanyDefaultVideoId(tx, company, videoId);
     tx.update(ref, {
       status: VIDEO_STATUS.INACTIVE,
       active: false,
@@ -427,27 +475,6 @@ export const deactivateVideo = onCall(async (request) => {
       updatedAt: nowIso,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
-    const settings = await tx.get(db.collection("settings").doc("portal"));
-    if (settings.exists && settings.data()?.activeVideoId === videoId) {
-      tx.set(
-        settings.ref,
-        { activeVideoId: "", updatedAt: FieldValue.serverTimestamp() },
-        { merge: true },
-      );
-    }
-    const companyRef = db.collection("companies").doc(company);
-    const companySnap = await tx.get(companyRef);
-    if (companySnap.exists && companySnap.data()?.activeVideoId === videoId) {
-      tx.set(
-        companyRef,
-        {
-          activeVideoId: "",
-          updatedAt: nowIso,
-          updatedAtServer: FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-    }
   });
 
   await writeAuditEvent({
@@ -476,6 +503,7 @@ export const archiveVideo = onCall(async (request) => {
       throw new HttpsError("permission-denied", "Video belongs to another company.");
     }
     assertNotDeleted(data);
+    await syncCompanyDefaultVideoId(tx, company, videoId);
     tx.update(ref, {
       status: VIDEO_STATUS.ARCHIVED,
       active: false,
@@ -485,27 +513,6 @@ export const archiveVideo = onCall(async (request) => {
       updatedAt: nowIso,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
-    const settings = await tx.get(db.collection("settings").doc("portal"));
-    if (settings.exists && settings.data()?.activeVideoId === videoId) {
-      tx.set(
-        settings.ref,
-        { activeVideoId: "", updatedAt: FieldValue.serverTimestamp() },
-        { merge: true },
-      );
-    }
-    const companyRef = db.collection("companies").doc(company);
-    const companySnap = await tx.get(companyRef);
-    if (companySnap.exists && companySnap.data()?.activeVideoId === videoId) {
-      tx.set(
-        companyRef,
-        {
-          activeVideoId: "",
-          updatedAt: nowIso,
-          updatedAtServer: FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-    }
   });
 
   await writeAuditEvent({
@@ -617,4 +624,61 @@ export const getAdminVideoPreviewUrl = onCall(async (request) => {
     versionNumber: data.versionNumber,
     status: data.status,
   };
+});
+
+/** Update display title (and optional description) after upload. */
+export const updateVideoMetadata = onCall(async (request) => {
+  const videoId = String(request.data?.videoId || "").trim();
+  const title = String(request.data?.title || "").trim();
+  const descriptionProvided = request.data?.description != null;
+  const description = descriptionProvided
+    ? String(request.data.description || "").trim()
+    : undefined;
+  if (!videoId) throw new HttpsError("invalid-argument", "videoId required.");
+  if (!title || title.length > 200) {
+    throw new HttpsError("invalid-argument", "A valid title is required (max 200 characters).");
+  }
+  if (description !== undefined && description.length > 2000) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Description must be 2000 characters or fewer.",
+    );
+  }
+
+  const { ctx, companyId: company } = await resolveCompany(request);
+  const uid = ctx.uid;
+  const ref = db.collection("videos").doc(videoId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "Video not found.");
+  const data = snap.data()!;
+  if (data.companyId !== company) {
+    throw new HttpsError("permission-denied", "Video belongs to another company.");
+  }
+  assertNotDeleted(data);
+
+  const nowIso = new Date().toISOString();
+  const updates: Record<string, unknown> = {
+    title,
+    updatedAt: nowIso,
+    updatedAtServer: FieldValue.serverTimestamp(),
+  };
+  if (descriptionProvided) {
+    updates.description = description;
+  }
+
+  await ref.update(updates);
+
+  await writeAuditEvent({
+    type: AUDIT_EVENT.VIDEO_UPLOADED,
+    actorUid: uid,
+    actorType: "administrator",
+    payload: {
+      action: "video_metadata_updated",
+      videoId,
+      companyId: company,
+      title,
+    },
+  });
+
+  return { ok: true, videoId, title };
 });

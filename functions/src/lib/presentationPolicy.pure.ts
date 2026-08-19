@@ -38,3 +38,6 @@ export function sessionSingleViewBlocked(
 export function genericAccessUnavailableMessage(): string {
   return "This presentation is no longer available. Please contact your representative for assistance.";
 }
+
+export const REP_PRESENTATION_CONFIG_ERROR =
+  "Your presentation configuration requires administrator attention. Please contact your administrator.";

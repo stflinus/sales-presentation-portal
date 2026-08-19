@@ -42,19 +42,19 @@ interface SelectableVideo {
 
 type CompanyRow = Company & { id: string };
 
-function isStaffWithPresentationSettings(u: StaffUserRow): boolean {
-  const role = u.primaryRole;
+/** Representatives and company managers receive per-user presentation configuration. */
+function isPresentationAssignable(u: StaffUserRow): boolean {
   return (
-    !!role &&
-    role !== ROLE_IDS.ADMINISTRATOR &&
-    role !== ROLE_IDS.OWNER &&
-    !!u.companyId
+    u.primaryRole === ROLE_IDS.REPRESENTATIVE || u.primaryRole === ROLE_IDS.MANAGER
   );
 }
 
 export function UsersPage() {
-  const { hasPermission, companyId: ownCompanyId } = useAuth();
+  const { hasPermission, isPlatformAdmin, companyId: ownCompanyId, refreshClaims } =
+    useAuth();
   const canManagePlatform = hasPermission(PERMISSIONS.USERS_MANAGE);
+  const canManagePresentationPolicies =
+    isPlatformAdmin || hasPermission(PERMISSIONS.PRESENTATION_POLICIES_MANAGE);
   const canManageCompany = hasPermission(PERMISSIONS.USERS_MANAGE_COMPANY);
   const canManage = canManagePlatform || canManageCompany;
   const canPickCompany = hasPermission(PERMISSIONS.COMPANIES_MANAGE);
@@ -119,8 +119,14 @@ export function UsersPage() {
     }
   }, [canManage, refreshUsers, refreshCompanies]);
 
-  async function openPresentationSettings(u: StaffUserRow) {
-    if (!canManagePlatform) return;
+  useEffect(() => {
+    if (isPlatformAdmin) {
+      void refreshClaims();
+    }
+  }, [isPlatformAdmin, refreshClaims]);
+
+  async function openPresentationAccess(u: StaffUserRow) {
+    if (!canManagePresentationPolicies) return;
     setEditingUser(u);
     setSettingsLoading(true);
     setError(null);
@@ -138,19 +144,19 @@ export function UsersPage() {
       setAccessPolicy(ps?.accessPolicy || ACCESS_POLICY.SINGLE_VIEW);
       setAccessDurationDays(ps?.accessDurationDays ?? 7);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load presentation settings.");
+      setError(err instanceof Error ? err.message : "Unable to load presentation access.");
       setEditingUser(null);
     } finally {
       setSettingsLoading(false);
     }
   }
 
-  function closePresentationSettings() {
+  function closePresentationAccess() {
     setEditingUser(null);
     setSettingsVideos([]);
   }
 
-  async function savePresentationSettings(e: FormEvent) {
+  async function savePresentationAccess(e: FormEvent) {
     e.preventDefault();
     if (!editingUser) return;
     setSettingsSaving(true);
@@ -165,11 +171,11 @@ export function UsersPage() {
         accessDurationDays:
           accessPolicy === ACCESS_POLICY.SINGLE_VIEW ? null : accessDurationDays,
       });
-      setMessage(`Presentation settings updated for ${editingUser.displayName}.`);
-      closePresentationSettings();
+      setMessage(`Presentation access updated for ${editingUser.displayName}.`);
+      closePresentationAccess();
       await refreshUsers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save presentation settings.");
+      setError(err instanceof Error ? err.message : "Failed to save presentation access.");
     } finally {
       setSettingsSaving(false);
     }
@@ -349,13 +355,13 @@ export function UsersPage() {
         ) : null}
         {users.length > 0 ? (
           <div className="table-wrap">
-            <table>
+            <table className="users-table">
               <thead>
                 <tr>
                   <th>Name</th>
                   <th>Role</th>
                   <th>Company</th>
-                  {canManagePlatform ? <th>Presentation</th> : null}
+                  {canManagePresentationPolicies ? <th>Presentation</th> : null}
                   <th>Status</th>
                   <th>Created</th>
                   <th>Actions</th>
@@ -367,6 +373,14 @@ export function UsersPage() {
                     <td>
                       <strong>{u.displayName}</strong>
                       <div className="muted small">{u.email}</div>
+                      {canManagePresentationPolicies && isPresentationAssignable(u) ? (
+                        <div className="presentation-inline-summary mobile-only">
+                          <div>{u.presentationSummary?.videoTitle || "Company default"}</div>
+                          <div className="muted">
+                            {u.presentationSummary?.accessLabel || "Single Viewing"}
+                          </div>
+                        </div>
+                      ) : null}
                     </td>
                     <td>{u.primaryRole || "—"}</td>
                     <td>
@@ -392,19 +406,15 @@ export function UsersPage() {
                         companyName(u.companyId)
                       )}
                     </td>
-                    {canManagePlatform ? (
-                      <td>
-                        {isStaffWithPresentationSettings(u) ? (
-                          <>
-                            <div className="small">
-                              <span className="muted">Video: </span>
-                              {u.presentationSummary?.videoTitle || "Company default"}
-                            </div>
-                            <div className="small">
-                              <span className="muted">Access: </span>
+                    {canManagePresentationPolicies ? (
+                      <td className="presentation-cell desktop-only">
+                        {isPresentationAssignable(u) ? (
+                          <div className="presentation-compact">
+                            <div>{u.presentationSummary?.videoTitle || "Company default"}</div>
+                            <div className="muted small">
                               {u.presentationSummary?.accessLabel || "Single Viewing"}
                             </div>
-                          </>
+                          </div>
                         ) : (
                           "—"
                         )}
@@ -415,15 +425,15 @@ export function UsersPage() {
                     </td>
                     <td>{formatDateTime(u.createdAt)}</td>
                     <td>
-                      <div className="inline-actions">
-                        {canManagePlatform && isStaffWithPresentationSettings(u) ? (
+                      <div className="inline-actions user-row-actions">
+                        {canManagePresentationPolicies && isPresentationAssignable(u) ? (
                           <button
                             type="button"
                             className="ghost"
                             disabled={busyUid === u.uid}
-                            onClick={() => void openPresentationSettings(u)}
+                            onClick={() => void openPresentationAccess(u)}
                           >
-                            Presentation
+                            Presentation Access
                           </button>
                         ) : null}
                         <button
@@ -460,114 +470,113 @@ export function UsersPage() {
       </section>
 
       {editingUser ? (
-        <section className="panel">
-          <h2>Presentation settings — {editingUser.displayName}</h2>
-          <p className="muted">
-            Configure which video this user sends and what access policy applies to new
-            invitations. Existing invitations keep their original settings.
-          </p>
-          {settingsLoading ? (
-            <p className="muted">Loading…</p>
-          ) : (
-            <form className="form-stack" onSubmit={savePresentationSettings}>
-              <label>
-                Active video
-                <select
-                  value={activeVideoId}
-                  required
-                  onChange={(e) => setActiveVideoId(e.target.value)}
-                >
-                  <option value="" disabled>
-                    Select a video
-                  </option>
-                  {settingsVideos.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.title}
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="presentation-access-title"
+        >
+          <section className="panel modal-panel presentation-access-modal">
+            <h2 id="presentation-access-title">
+              Presentation Access — {editingUser.displayName}
+            </h2>
+            <p className="muted">
+              These settings apply to new invitations only. Existing invitations keep their
+              original video and access policy.
+            </p>
+            {settingsLoading ? (
+              <p className="muted">Loading…</p>
+            ) : (
+              <form className="form-stack" onSubmit={savePresentationAccess}>
+                <label>
+                  Assigned video
+                  <select
+                    value={activeVideoId}
+                    required
+                    onChange={(e) => setActiveVideoId(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      Select a video
                     </option>
-                  ))}
-                </select>
-              </label>
+                    {settingsVideos.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-              <fieldset>
-                <legend>Access method</legend>
-                <label className="radio-row">
-                  <input
-                    type="radio"
-                    name="accessPolicy"
-                    checked={accessPolicy === ACCESS_POLICY.SINGLE_VIEW}
-                    onChange={() => setAccessPolicy(ACCESS_POLICY.SINGLE_VIEW)}
-                  />
-                  {accessPolicyLabel(ACCESS_POLICY.SINGLE_VIEW)}
-                  <span className="muted small">
-                    The presentation may be successfully viewed once.
-                  </span>
-                </label>
-                <label className="radio-row">
-                  <input
-                    type="radio"
-                    name="accessPolicy"
-                    checked={accessPolicy === ACCESS_POLICY.TIME_LIMITED}
-                    onChange={() => setAccessPolicy(ACCESS_POLICY.TIME_LIMITED)}
-                  />
-                  {accessPolicyLabel(ACCESS_POLICY.TIME_LIMITED)}
-                  <span className="muted small">
-                    The presentation may be accessed and replayed during the availability
-                    period.
-                  </span>
-                </label>
-                {accessPolicy === ACCESS_POLICY.TIME_LIMITED ? (
-                  <label>
-                    Available for (days)
+                <fieldset>
+                  <legend>Access policy</legend>
+                  <label className="radio-row">
                     <input
-                      type="number"
-                      min={1}
-                      max={365}
-                      required
-                      value={accessDurationDays}
-                      onChange={(e) => setAccessDurationDays(Number(e.target.value))}
+                      type="radio"
+                      name="accessPolicy"
+                      checked={accessPolicy === ACCESS_POLICY.SINGLE_VIEW}
+                      onChange={() => setAccessPolicy(ACCESS_POLICY.SINGLE_VIEW)}
                     />
+                    {accessPolicyLabel(ACCESS_POLICY.SINGLE_VIEW)}
                   </label>
-                ) : null}
-                <label className="radio-row">
-                  <input
-                    type="radio"
-                    name="accessPolicy"
-                    checked={accessPolicy === ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION}
-                    onChange={() =>
-                      setAccessPolicy(ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION)
-                    }
-                  />
-                  {accessPolicyLabel(ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION)}
-                  <span className="muted small">
-                    One successful viewing, or expires if not viewed within the period.
-                  </span>
-                </label>
-                {accessPolicy === ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION ? (
-                  <label>
-                    Expires after (days)
+                  <label className="radio-row">
                     <input
-                      type="number"
-                      min={1}
-                      max={365}
-                      required
-                      value={accessDurationDays}
-                      onChange={(e) => setAccessDurationDays(Number(e.target.value))}
+                      type="radio"
+                      name="accessPolicy"
+                      checked={accessPolicy === ACCESS_POLICY.TIME_LIMITED}
+                      onChange={() => setAccessPolicy(ACCESS_POLICY.TIME_LIMITED)}
                     />
+                    Time-Limited Access
                   </label>
-                ) : null}
-              </fieldset>
+                  {accessPolicy === ACCESS_POLICY.TIME_LIMITED ? (
+                    <label>
+                      Access duration (days)
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        required
+                        value={accessDurationDays}
+                        onChange={(e) => setAccessDurationDays(Number(e.target.value))}
+                      />
+                    </label>
+                  ) : null}
+                  <label className="radio-row">
+                    <input
+                      type="radio"
+                      name="accessPolicy"
+                      checked={accessPolicy === ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION}
+                      onChange={() =>
+                        setAccessPolicy(ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION)
+                      }
+                    />
+                    {accessPolicyLabel(ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION)}
+                  </label>
+                  {accessPolicy === ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION ? (
+                    <label>
+                      Expires after (days)
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        required
+                        value={accessDurationDays}
+                        onChange={(e) => setAccessDurationDays(Number(e.target.value))}
+                      />
+                    </label>
+                  ) : null}
+                </fieldset>
 
-              <div className="inline-actions">
-                <button type="submit" disabled={settingsSaving}>
-                  {settingsSaving ? "Saving…" : "Save settings"}
-                </button>
-                <button type="button" className="ghost" onClick={closePresentationSettings}>
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-        </section>
+                <div className="inline-actions">
+                  <button type="button" className="ghost" onClick={closePresentationAccess}>
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={settingsSaving}>
+                    {settingsSaving ? "Saving…" : "Save Changes"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </section>
+        </div>
       ) : null}
 
       {tempPassword ? (

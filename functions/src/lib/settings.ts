@@ -121,35 +121,45 @@ export async function getActiveVideoForCompany(companyId: string) {
   if (company.status !== "active") {
     throw new HttpsError("failed-precondition", "Company is inactive.");
   }
-  if (!company.activeVideoId) {
-    throw new HttpsError(
-      "failed-precondition",
-      "No active video configured for this company.",
-    );
+
+  const validateVideo = async (videoId: string) => {
+    const snap = await db.collection("videos").doc(videoId).get();
+    if (!snap.exists) return null;
+    const data = snap.data()!;
+    if (
+      data.status !== VIDEO_STATUS.ACTIVE ||
+      data.active !== true ||
+      data.isPlaceholder === true ||
+      data.deleted === true
+    ) {
+      return null;
+    }
+    if (data.companyId && data.companyId !== companyId) {
+      return null;
+    }
+    return { id: snap.id, ...data, company };
+  };
+
+  if (company.activeVideoId) {
+    const preferred = await validateVideo(company.activeVideoId);
+    if (preferred) return preferred;
   }
-  const snap = await db.collection("videos").doc(company.activeVideoId).get();
-  if (!snap.exists) {
-    throw new HttpsError("failed-precondition", "Active video missing.");
+
+  const snap = await db
+    .collection("videos")
+    .where("companyId", "==", companyId)
+    .where("status", "==", VIDEO_STATUS.ACTIVE)
+    .limit(20)
+    .get();
+  for (const doc of snap.docs) {
+    const resolved = await validateVideo(doc.id);
+    if (resolved) return resolved;
   }
-  const data = snap.data()!;
-  if (
-    data.status !== VIDEO_STATUS.ACTIVE ||
-    data.active !== true ||
-    data.isPlaceholder === true ||
-    data.deleted === true
-  ) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Configured video is not active. Activate a production video in the Video Library.",
-    );
-  }
-  if (data.companyId && data.companyId !== companyId) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Active video does not belong to this company.",
-    );
-  }
-  return { id: snap.id, ...data, company };
+
+  throw new HttpsError(
+    "failed-precondition",
+    "No active video configured for this company. Activate at least one video in the Video Library.",
+  );
 }
 
 export async function getActiveVideo() {

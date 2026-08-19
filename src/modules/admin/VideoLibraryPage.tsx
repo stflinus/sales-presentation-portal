@@ -59,23 +59,36 @@ function mapUploadError(err: unknown): string {
   if (message.toLowerCase().includes("storage before finalizing")) {
     return "Storage upload is still settling. Wait a moment and use Retry Finalization.";
   }
+  if (
+    message.toUpperCase() === "INTERNAL" ||
+    code.includes("internal") ||
+    message.toLowerCase().includes("internal")
+  ) {
+    return "Something went wrong. Please try again or contact support if this continues.";
+  }
+  if (message.toLowerCase().includes("finalize the upload before activating")) {
+    return "Upload is not finalized yet. Use Retry Finalization, then Activate.";
+  }
   if (message) return message.replace(/^Firebase:\s*/i, "").replace(/\s*\(.*\)$/, "");
   return "Upload failed.";
 }
 
 /** True when Storage may exist but Firestore fileSize was never written. */
 function needsFinalization(v: VideoRow): boolean {
+  const size = v.fileSize ?? v.sizeBytes;
   return (
     Boolean(v.storagePath) &&
-    v.fileSize == null &&
+    (size == null || Number(size) <= 0) &&
     v.status !== VIDEO_STATUS.DELETED &&
     v.deleted !== true
   );
 }
 
 function canActivate(v: VideoRow): boolean {
+  const size = v.fileSize ?? v.sizeBytes;
   return (
-    v.fileSize != null &&
+    size != null &&
+    Number(size) > 0 &&
     Boolean(v.storagePath) &&
     v.status !== VIDEO_STATUS.DELETED &&
     v.deleted !== true &&
@@ -99,6 +112,9 @@ export function VideoLibraryPage() {
   const [title, setTitle] = useState("Sales Presentation");
   const [description, setDescription] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [renamingVideo, setRenamingVideo] = useState<VideoRow | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameDescription, setRenameDescription] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -156,6 +172,41 @@ export function VideoLibraryPage() {
     const finalize = httpsCallable(functions, "finalizeVideoUpload");
     const result = await finalize({ videoId, durationSeconds });
     console.info("[video-upload] finalize_ok", result.data);
+  }
+
+  function openRename(v: VideoRow) {
+    setRenamingVideo(v);
+    setRenameTitle(v.title);
+    setRenameDescription(v.description || "");
+  }
+
+  function closeRename() {
+    setRenamingVideo(null);
+    setRenameTitle("");
+    setRenameDescription("");
+  }
+
+  async function saveRename(e: FormEvent) {
+    e.preventDefault();
+    if (!renamingVideo) return;
+    setBusyId(renamingVideo.id);
+    setError(null);
+    setMessage(null);
+    try {
+      const callable = httpsCallable(functions, "updateVideoMetadata");
+      await callable({
+        videoId: renamingVideo.id,
+        title: renameTitle.trim(),
+        description: renameDescription.trim(),
+      });
+      setMessage("Video label updated.");
+      closeRename();
+      await refresh();
+    } catch (err) {
+      setError(mapUploadError(err));
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function retryFinalization(videoId: string) {
@@ -358,7 +409,7 @@ export function VideoLibraryPage() {
           <p className="eyebrow">Administration</p>
           <h1>Video Library</h1>
           <p className="muted">
-            Company: {companyId || "—"} · Only one Active video at a time
+            Company: {companyId || "—"} · Multiple videos may be Active at once
           </p>
         </div>
         <StaffNav />
@@ -505,6 +556,14 @@ export function VideoLibraryPage() {
                             type="button"
                             className="ghost"
                             disabled={busyId === v.id || stuck}
+                            onClick={() => openRename(v)}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={busyId === v.id || stuck}
                             onClick={() => void preview(v.id)}
                           >
                             Preview
@@ -589,6 +648,46 @@ export function VideoLibraryPage() {
           </p>
         ) : null}
       </section>
+
+      {renamingVideo ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <section className="panel modal-panel presentation-access-modal">
+            <h2>Rename video</h2>
+            <p className="muted">
+              Update the label shown in the Video Library and representative assignment
+              dropdowns.
+            </p>
+            <form className="stack-form" onSubmit={(e) => void saveRename(e)}>
+              <label>
+                Title
+                <input
+                  value={renameTitle}
+                  onChange={(e) => setRenameTitle(e.target.value)}
+                  required
+                  maxLength={200}
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  rows={3}
+                  value={renameDescription}
+                  onChange={(e) => setRenameDescription(e.target.value)}
+                  maxLength={2000}
+                />
+              </label>
+              <div className="inline-actions">
+                <button type="button" className="ghost" onClick={closeRename}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={busyId === renamingVideo.id}>
+                  {busyId === renamingVideo.id ? "Saving…" : "Save label"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
 
       {previewUrl ? (
         <section className="panel">
