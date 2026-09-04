@@ -274,6 +274,7 @@ export const acceptLegal = onCall(async (request) => {
       ndaVersionId: nda.id,
       termsVersionId: terms.id,
       privacyVersionId: privacy.id,
+      lastMeaningfulClientActivityAt: acceptedAtUtc,
       updatedAt: acceptedAtUtc,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
@@ -281,6 +282,18 @@ export const acceptLegal = onCall(async (request) => {
       status: INVITE_STATUS.ACCEPTED,
     });
   });
+
+  // Always refresh inactivity clock on legal interaction (including idempotent re-accept).
+  await sessionRef
+    .set(
+      {
+        lastMeaningfulClientActivityAt: acceptedAtUtc,
+        updatedAt: acceptedAtUtc,
+        updatedAtServer: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+    .catch(() => undefined);
 
   const auditEventId = await writeAuditEvent({
     type: AUDIT_EVENT.LEGAL_ACCEPTED,

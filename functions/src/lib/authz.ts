@@ -70,7 +70,15 @@ export async function loadStaffContext(
   const rolePrimary = (data.primaryRole || roleIds[0] || ROLE_IDS.REPRESENTATIVE) as RoleId;
   const claimPerms = (request.auth?.token?.permissions as Permission[]) || [];
   const profilePerms = (data.permissions as Permission[]) || [];
-  const permissions = (claimPerms.length ? claimPerms : profilePerms) as Permission[];
+  const rolePerms = permissionsForRole(rolePrimary);
+  // Union role defaults with stored/claim perms so newly added RBAC grants
+  // apply without requiring a one-off profile migration.
+  const permissionSet = new Set<Permission>([
+    ...rolePerms,
+    ...profilePerms,
+    ...claimPerms,
+  ]);
+  const permissions = Array.from(permissionSet);
   const companyId = (data.companyId as string | null) ?? null;
   return {
     uid,

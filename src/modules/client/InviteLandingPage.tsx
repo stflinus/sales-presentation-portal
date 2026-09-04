@@ -1,40 +1,44 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { httpsCallable } from "firebase/functions";
 import { signInWithCustomToken } from "firebase/auth";
-import { auth, functions } from "@/lib/firebase";
-import { getOrCreateDeviceId } from "@/lib/deviceId";
+import { auth } from "@/lib/firebase";
 import { useAuth } from "@/modules/auth/AuthProvider";
 import {
   mapInviteError,
   type ClientInviteError,
 } from "./inviteErrors";
+import "./inviteLanding.css";
 
-interface InviteWelcomePayload {
-  customToken: string;
+interface SessionInfo {
   sessionId: string;
   clientName: string;
   companyName: string;
-  representativeName: string;
-  videoTitle: string;
-  estimatedDurationLabel: string;
-  legalDocuments: Array<{
-    type: string;
-    title: string;
-    versionLabel: string;
-  }>;
 }
 
-type Phase = "loading" | "welcome" | "error";
+type Phase = "loading" | "welcome" | "device-blocked" | "error";
+
+async function apiCall(endpoint: string, body: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch(`/api/viewer/${endpoint}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "include",
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Request failed");
+  }
+  return data;
+}
 
 export function InviteLandingPage() {
   const { token } = useParams();
   const navigate = useNavigate();
   const { rehydrateFromToken } = useAuth();
   const [phase, setPhase] = useState<Phase>("loading");
-  const [welcome, setWelcome] = useState<InviteWelcomePayload | null>(null);
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
   const [error, setError] = useState<ClientInviteError | null>(null);
-  const [continuing, setContinuing] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,29 +56,64 @@ export function InviteLandingPage() {
         return;
       }
       try {
-        const deviceId = getOrCreateDeviceId();
-        const exchange = httpsCallable(functions, "exchangeInviteToken");
-        const result = await exchange({ token, deviceId });
-        const data = result.data as InviteWelcomePayload;
-
-        if (!data.customToken || !data.sessionId) {
-          throw new Error("incomplete");
-        }
-
-        await signInWithCustomToken(auth, data.customToken);
-        await rehydrateFromToken();
+        const resumeResult = (await apiCall("resume", { token })) as {
+          ok: boolean;
+          needsClaim?: boolean;
+          deviceBlocked?: boolean;
+          error?: string;
+          customToken?: string;
+          sessionId?: string;
+          clientName?: string;
+          companyName?: string;
+        };
 
         if (cancelled) return;
-        setWelcome({
-          customToken: data.customToken,
-          sessionId: data.sessionId,
-          clientName: data.clientName || "Guest",
-          companyName: data.companyName || "Presentation Hub",
-          representativeName: data.representativeName || "your representative",
-          videoTitle: data.videoTitle || "Presentation",
-          estimatedDurationLabel:
-            data.estimatedDurationLabel || "Approximately 10–15 minutes",
-          legalDocuments: data.legalDocuments || [],
+
+        if (resumeResult.deviceBlocked) {
+          setPhase("device-blocked");
+          return;
+        }
+
+        if (resumeResult.ok && resumeResult.customToken) {
+          await signInWithCustomToken(auth, resumeResult.customToken);
+          await rehydrateFromToken();
+          setSessionInfo({
+            sessionId: resumeResult.sessionId || "",
+            clientName: resumeResult.clientName || "Guest",
+            companyName: resumeResult.companyName || "Presentation Hub",
+          });
+          setPhase("welcome");
+          return;
+        }
+
+        // First open (or after device reset): claim this browser atomically.
+        const claimResult = (await apiCall("claim", { token })) as {
+          ok: boolean;
+          deviceBlocked?: boolean;
+          error?: string;
+          customToken?: string;
+          sessionId?: string;
+          clientName?: string;
+          companyName?: string;
+        };
+
+        if (cancelled) return;
+
+        if (claimResult.deviceBlocked) {
+          setPhase("device-blocked");
+          return;
+        }
+
+        if (!claimResult.ok || !claimResult.customToken) {
+          throw new Error(claimResult.error || "Unable to open this invitation.");
+        }
+
+        await signInWithCustomToken(auth, claimResult.customToken);
+        await rehydrateFromToken();
+        setSessionInfo({
+          sessionId: claimResult.sessionId || "",
+          clientName: claimResult.clientName || "Guest",
+          companyName: claimResult.companyName || "Presentation Hub",
         });
         setPhase("welcome");
       } catch (err) {
@@ -91,9 +130,9 @@ export function InviteLandingPage() {
   }, [token, rehydrateFromToken]);
 
   function onContinue() {
-    if (!welcome || continuing) return;
-    setContinuing(true);
-    navigate(`/p/${welcome.sessionId}`, { replace: true });
+    if (!sessionInfo || busy) return;
+    setBusy(true);
+    navigate(`/p/${sessionInfo.sessionId}`, { replace: true });
   }
 
   if (phase === "loading") {
@@ -101,11 +140,9 @@ export function InviteLandingPage() {
       <div className="client-shell">
         <div className="panel client-panel invite-loading-panel">
           <p className="eyebrow">Secure Invitation</p>
-          <h1>Loading your presentation...</h1>
+          <h1>Opening your presentation…</h1>
           <div className="invite-spinner" role="status" aria-label="Loading" />
-          <p className="muted small">
-            Verifying your invitation, company, presentation, and legal documents.
-          </p>
+          <p className="muted small">Please wait a moment.</p>
         </div>
       </div>
     );
@@ -123,32 +160,39 @@ export function InviteLandingPage() {
     );
   }
 
-  if (phase === "welcome" && welcome) {
+  if (phase === "device-blocked") {
     return (
       <div className="client-shell">
         <div className="panel client-panel">
           <p className="eyebrow">Secure Invitation</p>
-          <h1>Welcome {welcome.clientName}</h1>
-          <p className="invite-company">{welcome.companyName}</p>
+          <h1>Already opened on another device</h1>
+          <div className="invite-device-blocked">
+            <p>This presentation has already been opened on another device.</p>
+            <p>Please use the original device, or contact your representative for assistance.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === "welcome" && sessionInfo) {
+    return (
+      <div className="client-shell">
+        <div className="panel client-panel">
+          <p className="eyebrow">Secure Invitation</p>
+          <h1>Welcome, {sessionInfo.clientName}</h1>
+          <p className="invite-company">{sessionInfo.companyName}</p>
           <p>
-            Your representative has securely shared a presentation with you.
-          </p>
-          <p>
-            Before continuing you must review and accept the required legal
-            documents.
-          </p>
-          <p className="muted">
-            Estimated viewing time:
-            <br />
-            <strong>{welcome.estimatedDurationLabel}</strong>
+            You are ready to view your secure presentation. Next you will review
+            the required legal documents, then watch the video.
           </p>
           <button
             type="button"
-            className="invite-continue-btn"
-            disabled={continuing}
+            className="invite-btn invite-btn-primary"
+            disabled={busy}
             onClick={onContinue}
           >
-            {continuing ? "Continuing…" : "Continue"}
+            Continue
           </button>
         </div>
       </div>

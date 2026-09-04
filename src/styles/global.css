@@ -760,9 +760,25 @@ th {
   display: none;
 }
 
-.user-row-actions {
-  min-width: 12rem;
+.users-filter-bar {
+  grid-template-columns: minmax(12rem, 1fr) auto;
+  align-items: end;
 }
+
+.users-lifecycle-hint {
+  margin-top: 0.85rem;
+}
+
+.danger-text {
+  color: var(--status-overdue, #b42318);
+}
+
+button.danger {
+  background: var(--status-overdue, #b42318);
+  color: #fff;
+  border-color: transparent;
+}
+
 
 @media (max-width: 900px) {
   .users-table .desktop-only {

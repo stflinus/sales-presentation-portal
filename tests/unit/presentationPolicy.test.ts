@@ -57,7 +57,7 @@ describe("access policy summaries", () => {
 });
 
 describe("session access enforcement", () => {
-  const now = Date.parse("2026-08-17T18:00:00.000Z");
+  const now = Date.now();
 
   it("blocks completed single-view sessions", () => {
     expect(

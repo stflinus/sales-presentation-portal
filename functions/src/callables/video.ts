@@ -32,8 +32,10 @@ import {
   renewLease,
 } from "../lib/viewingLease";
 import {
+  capSignedUrlExpiresAtMs,
   genericAccessUnavailableMessage,
   sessionIsExpired,
+  shouldConsumeViewingEntitlementOnCompletion,
 } from "../lib/presentationPolicy";
 
 async function loadEligibleSession(sessionId: string, deviceId: string) {
@@ -79,13 +81,24 @@ async function loadEligibleSession(sessionId: string, deviceId: string) {
   if (!videoSnap.exists) throw new HttpsError("failed-precondition", "Video missing.");
   const video = videoSnap.data()!;
 
-  if (
-    video.deleted === true ||
-    video.status === "deleted" ||
-    video.status === "archived" ||
-    video.archived === true ||
-    video.isPlaceholder === true
-  ) {
+  // Tombstone or permanently deleted — always deny
+  if (video.tombstone === true || video.permanentlyDeletedAt) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This presentation is no longer available. Please contact your representative.",
+    );
+  }
+
+  // Soft deleted — always deny
+  if (video.deleted === true || video.status === "deleted") {
+    throw new HttpsError(
+      "failed-precondition",
+      "This presentation is no longer available. Please contact your representative.",
+    );
+  }
+
+  // Placeholder — always deny
+  if (video.isPlaceholder === true) {
     throw new HttpsError(
       "failed-precondition",
       "This presentation is no longer available. Please contact your representative.",
@@ -99,11 +112,20 @@ async function loadEligibleSession(sessionId: string, deviceId: string) {
     );
   }
 
-  if (
-    video.status === "inactive" ||
-    video.active === false
-  ) {
-    // Replaced-by-activation videos may still serve in-flight incomplete sessions.
+  // Archived — allow only if allowExistingSessions=true AND this session's videoId matches
+  if (video.status === "archived" || video.archived === true) {
+    if (video.allowExistingSessions === true && session.videoId === videoSnap.id) {
+      // Allow existing authorized sessions to continue
+    } else {
+      throw new HttpsError(
+        "failed-precondition",
+        "This presentation is no longer available. Please contact your representative.",
+      );
+    }
+  }
+
+  // Inactive — allow only if allowExistingSessions=true
+  if (video.status === "inactive" || video.active === false) {
     if (video.allowExistingSessions !== true) {
       throw new HttpsError(
         "failed-precondition",
@@ -115,18 +137,34 @@ async function loadEligibleSession(sessionId: string, deviceId: string) {
   return { sessionRef, session, video, videoId: videoSnap.id, status };
 }
 
-async function mintSignedUrl(storagePath: string): Promise<string> {
+/**
+ * Mint a private Storage signed URL.
+ * Never extends past the invitation/session snapshotted expiresAt.
+ */
+async function mintSignedUrl(
+  storagePath: string,
+  invitationExpiresAt?: string | null,
+): Promise<{ url: string; expiresAt: string }> {
   const file = bucket.file(storagePath);
   const [exists] = await file.exists();
   if (!exists) {
     throw new HttpsError("failed-precondition", "Video file not found in storage.");
   }
+  const nowMs = Date.now();
+  const expiresAtMs = capSignedUrlExpiresAtMs({
+    nowMs,
+    signedUrlTtlMs: SIGNED_URL_TTL_MS,
+    invitationExpiresAt,
+  });
+  if (expiresAtMs == null) {
+    throw new HttpsError("failed-precondition", genericAccessUnavailableMessage());
+  }
   const [url] = await file.getSignedUrl({
     action: "read",
-    expires: Date.now() + SIGNED_URL_TTL_MS,
+    expires: expiresAtMs,
     version: "v4",
   });
-  return url;
+  return { url, expiresAt: new Date(expiresAtMs).toISOString() };
 }
 
 /**
@@ -139,7 +177,7 @@ export const grantVideoAccess = onCall(async (request) => {
   const deviceId = String(request.data?.deviceId || "");
   requireClientSession(request, sessionId);
 
-  const { video, videoId } = await loadEligibleSession(sessionId, deviceId);
+  const { session, video, videoId } = await loadEligibleSession(sessionId, deviceId);
   await assertLeaseAllowsDevice(sessionId, deviceId, { requireActiveLease: false });
 
   // If a lease is already active for this device, renew it while minting.
@@ -151,23 +189,73 @@ export const grantVideoAccess = onCall(async (request) => {
     }
   }
 
-  const url = await mintSignedUrl(video.storagePath as string);
+  // Use playbackStoragePath > optimizedStoragePath > storagePath (Bill 20-min fix)
+  const playbackPath =
+    (video.playbackStoragePath as string) ||
+    (video.optimizedStoragePath as string) ||
+    (video.storagePath as string);
+
+  const { url, expiresAt } = await mintSignedUrl(
+    playbackPath,
+    String(session.expiresAt || "") || null,
+  );
+  const expiresInSeconds = Math.max(
+    0,
+    Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000),
+  );
+
+  // Extract slide markers from video document
+  const slideMarkers = video.slideMarkers || null;
+
+  const ip = clientIpFromRequest(request.rawRequest?.headers["x-forwarded-for"]);
+  const env = parseUserAgent(request.rawRequest?.headers["user-agent"] || "");
+  await writePresentationActivity({
+    sessionId,
+    inviteId: session.inviteId || null,
+    companyId: (session.companyId as string) || null,
+    representativeId: (session.representativeId as string) || null,
+    type: ACTIVITY_EVENT.PLAYBACK_AUTHORIZED,
+    severity: ACTIVITY_SEVERITY.INFO,
+    description: "Signed playback URL authorized for the bound device.",
+    env,
+    ipAddress: ip,
+    actorType: "client",
+    actorUid: request.auth?.uid || null,
+    payload: { videoId, expiresAt },
+  }).catch(() => undefined);
+
+  const nowIso = new Date().toISOString();
+  await db
+    .collection("presentationSessions")
+    .doc(sessionId)
+    .set(
+      {
+        lastMeaningfulClientActivityAt: nowIso,
+        updatedAt: nowIso,
+        updatedAtServer: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+    .catch(() => undefined);
 
   return {
     videoUrl: url,
-    expiresInSeconds: Math.floor(SIGNED_URL_TTL_MS / 1000),
+    expiresAt,
+    expiresInSeconds,
+    invitationExpiresAt: session.expiresAt || null,
     title: video.title,
     durationSeconds: video.durationSeconds ?? null,
     videoId,
+    slideMarkers,
     leaseRequiredForPlayback: true,
     controls: {
       download: false,
       pictureInPicture: true,
       remotePlayback: true,
       playbackRate: true,
-      nativeControls: true,
+      nativeControls: false,
     },
-    note: "Signed URL is short-lived. Viewing lease begins only after meaningful playback.",
+    note: "Signed URL TTL is capped by invitation expiration. Viewing lease begins only after meaningful playback.",
   };
 });
 
@@ -193,7 +281,7 @@ export const acquireViewingLease = onCall(async (request) => {
     );
   }
 
-  const { sessionRef, session, videoId, status } = await loadEligibleSession(
+  const { sessionRef, session, videoId } = await loadEligibleSession(
     sessionId,
     deviceId,
   );
@@ -212,9 +300,10 @@ export const acquireViewingLease = onCall(async (request) => {
     updatedAt: nowIso,
     updatedAtServer: FieldValue.serverTimestamp(),
     maxWatchedSeconds: Math.max(Number(session.maxWatchedSeconds || 0), currentTime),
+    lastMeaningfulClientActivityAt: nowIso,
   };
 
-  if (status === SESSION_STATUS.LEGAL_ACCEPTED || created) {
+  if (created) {
     const openedAt = session.analytics?.invitationOpenedAt as string | undefined;
     if (openedAt && session.analytics?.timeUntilVideoStartMs == null) {
       const timeUntilVideoStartMs = Date.now() - new Date(openedAt).getTime();
@@ -227,61 +316,54 @@ export const acquireViewingLease = onCall(async (request) => {
         videoVersionId: videoId,
       });
     }
-    if (status === SESSION_STATUS.LEGAL_ACCEPTED) {
-      await writeAuditEvent({
-        type: AUDIT_EVENT.VIDEO_STARTED,
-        sessionId,
-        inviteId: session.inviteId,
-        representativeId: session.representativeId,
-        actorUid: uid,
-        actorType: "client",
-        ipAddress: ip,
-        payload: { videoId, deviceId, leaseAcquiredAt: lease.acquiredAt },
-      });
-      await writePresentationActivity({
-        sessionId,
-        inviteId: session.inviteId,
-        companyId: (session.companyId as string) || null,
-        representativeId: session.representativeId,
-        type: ACTIVITY_EVENT.VIDEO_STARTED,
-        severity: ACTIVITY_SEVERITY.SUCCESS,
-        description: "Video playback started after a meaningful watch threshold.",
-        env,
-        ipAddress: ip,
-        actorType: "client",
-        actorUid: uid,
-        payload: { videoId, deviceId },
-      });
-      if (session.contactId) {
-        try {
-          await db.collection("contacts").doc(String(session.contactId)).update({
-            status: CONTACT_STATUS.PRESENTATION_STARTED,
-            lastSessionId: sessionId,
-            updatedAt: nowIso,
-            updatedAtServer: FieldValue.serverTimestamp(),
-          });
-        } catch {
-          // non-fatal
-        }
+    await writeAuditEvent({
+      type: AUDIT_EVENT.VIDEO_STARTED,
+      sessionId,
+      inviteId: session.inviteId,
+      representativeId: session.representativeId,
+      actorUid: uid,
+      actorType: "client",
+      ipAddress: ip,
+      payload: { videoId, deviceId, leaseAcquiredAt: lease.acquiredAt },
+    });
+    await writePresentationActivity({
+      sessionId,
+      inviteId: session.inviteId,
+      companyId: (session.companyId as string) || null,
+      representativeId: session.representativeId,
+      type: ACTIVITY_EVENT.VIDEO_STARTED,
+      severity: ACTIVITY_SEVERITY.SUCCESS,
+      description: "Video playback started after a meaningful watch threshold.",
+      env,
+      ipAddress: ip,
+      actorType: "client",
+      actorUid: uid,
+      payload: { videoId, deviceId },
+    });
+    if (session.contactId) {
+      try {
+        await db.collection("contacts").doc(String(session.contactId)).update({
+          status: CONTACT_STATUS.PRESENTATION_STARTED,
+          lastSessionId: sessionId,
+          updatedAt: nowIso,
+          updatedAtServer: FieldValue.serverTimestamp(),
+        });
+      } catch {
+        // non-fatal
       }
     }
   }
 
   await sessionRef.update(updates);
-  const url = await mintSignedUrl(
-    (
-      await db.collection("videos").doc(videoId).get()
-    ).data()!.storagePath as string,
-  );
-
+  // Do not mint a replacement signed URL here. The client already has a URL from
+  // grantVideoAccess; replacing <video src> mid-playback forces a full media reload.
   return {
     ok: true,
     leaseExpiresAt: lease.leaseExpiresAt,
     leaseTtlSeconds: Math.floor(
       (new Date(lease.leaseExpiresAt).getTime() - Date.now()) / 1000,
     ),
-    videoUrl: url,
-    expiresInSeconds: Math.floor(SIGNED_URL_TTL_MS / 1000),
+    invitationExpiresAt: session.expiresAt || null,
   };
 });
 
@@ -325,6 +407,7 @@ export const heartbeatPlayback = onCall(async (request) => {
       completionPercent,
       "analytics.watchDurationMs": Math.round(maxWatchedSeconds * 1000),
       "analytics.completionPercent": completionPercent,
+      lastMeaningfulClientActivityAt: nowIso,
       updatedAt: nowIso,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
@@ -416,8 +499,11 @@ async function finalizeCompletion(input: {
 }) {
   const { sessionRef, session, sessionId, videoId, uid, ip } = input;
   const timeLimited = isTimeLimitedPolicy(session.accessPolicy);
+  const consumeEntitlement = shouldConsumeViewingEntitlementOnCompletion(
+    session.accessPolicy,
+  );
 
-  if (!timeLimited) {
+  if (consumeEntitlement) {
     assertSessionAccessible(session);
   }
 
@@ -427,7 +513,7 @@ async function finalizeCompletion(input: {
     const fresh = await tx.get(sessionRef);
     const status = fresh.data()?.status as SessionStatus | undefined;
     if (!status) return;
-    if (!timeLimited && (status === SESSION_STATUS.COMPLETED || status === SESSION_STATUS.CLOSED)) {
+    if (consumeEntitlement && (status === SESSION_STATUS.COMPLETED || status === SESSION_STATUS.CLOSED)) {
       return;
     }
     tx.update(sessionRef, {
@@ -436,7 +522,7 @@ async function finalizeCompletion(input: {
       closedAt: completedAt,
       completionPercent: input.completionPercent,
       maxWatchedSeconds: input.maxWatchedSeconds,
-      viewingEntitlementConsumed: timeLimited ? false : true,
+      viewingEntitlementConsumed: consumeEntitlement,
       "analytics.completionPercent": input.completionPercent,
       "analytics.completionTime": completedAt,
       "analytics.watchDurationMs": Math.round(input.maxWatchedSeconds * 1000),

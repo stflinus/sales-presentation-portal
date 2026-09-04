@@ -92,3 +92,26 @@ export function clampAccessDurationDays(value: unknown): number {
     Math.max(MIN_ACCESS_DURATION_DAYS, Math.floor(n)),
   );
 }
+
+/**
+ * Admin UI only shows SINGLE_VIEW and TIME_LIMITED (no combined policy).
+ * This simplifies the UI while maintaining backward compatibility.
+ */
+export const ADMIN_ACCESS_POLICY_OPTIONS = [
+  ACCESS_POLICY.SINGLE_VIEW,
+  ACCESS_POLICY.TIME_LIMITED,
+] as const;
+
+/**
+ * Map SINGLE_VIEW_WITH_EXPIRATION to SINGLE_VIEW for admin display.
+ * Used when loading existing user settings into the admin selector.
+ */
+export function simplifyAccessPolicyForAdmin(
+  policy: AccessPolicy | string | null | undefined,
+): AccessPolicy {
+  const p = normalizeAccessPolicy(policy);
+  if (p === ACCESS_POLICY.SINGLE_VIEW_WITH_EXPIRATION) {
+    return ACCESS_POLICY.SINGLE_VIEW;
+  }
+  return p;
+}

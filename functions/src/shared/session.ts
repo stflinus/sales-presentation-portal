@@ -136,11 +136,21 @@ export type ViewingLeaseStatus =
  */
 export const VIEWING_LEASE_TTL_MS = 90_000;
 
-/** Signed URL lifetime. Renewal requires an eligible session + lease rules. */
-export const SIGNED_URL_TTL_MS = 5 * 60 * 1000;
+/** Signed URL lifetime (3 hours). Renewal requires an eligible session + lease rules. */
+export const SIGNED_URL_TTL_MS = 3 * 60 * 60 * 1000;
+
+/** Refresh signed URL before this many ms remaining. */
+export const SIGNED_URL_REFRESH_BEFORE_MS = 20 * 60 * 1000;
 
 /** Playback progress (seconds) that counts as meaningful playback / lease start. */
 export const MEANINGFUL_PLAYBACK_SECONDS = 1;
+
+/**
+ * Operational cleanup: remove invite/session portal rows after this much
+ * consecutive client inactivity (whichever comes first with invitation expiry).
+ * Does not change viewing-access policy.
+ */
+export const PRESENTATION_INACTIVITY_CLEANUP_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Percent of duration that counts as completed (heartbeat-based). */
 export const VIDEO_COMPLETION_THRESHOLD = 0.9;

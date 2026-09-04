@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { doc, onSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { SESSION_STATUS, ACCESS_POLICY, type PresentationSession } from "@spp/shared";
+import { SESSION_STATUS, ACCESS_POLICY, type PresentationSession, type SlideMarker } from "@spp/shared";
 import { db, functions } from "@/lib/firebase";
 import { getOrCreateDeviceId } from "@/lib/deviceId";
 import {
@@ -11,7 +11,7 @@ import {
   logClientActivity,
 } from "@/lib/clientActivity";
 import { useAuth } from "@/modules/auth/AuthProvider";
-import { SecureVideoPlayer } from "@/modules/video/SecureVideoPlayer";
+import { PresentationPlayer } from "@/modules/video/PresentationPlayer";
 import { LegalAcceptanceScreen } from "./LegalAcceptanceScreen";
 import { mapClientSessionError, type ClientInviteError } from "./inviteErrors";
 
@@ -41,6 +41,8 @@ export function ClientPresentationPage() {
   const [preparing, setPreparing] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoTitle, setVideoTitle] = useState("Presentation");
+  const [videoExpiresAt, setVideoExpiresAt] = useState<string | null>(null);
+  const [slideMarkers, setSlideMarkers] = useState<SlideMarker[] | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const readyLoggedRef = useRef(false);
@@ -240,9 +242,16 @@ export function ClientPresentationPage() {
         sessionId,
         deviceId: getOrCreateDeviceId(),
       });
-      const data = result.data as { videoUrl: string; title: string };
+      const data = result.data as {
+        videoUrl: string;
+        title: string;
+        expiresAt?: string;
+        slideMarkers?: SlideMarker[];
+      };
       setVideoUrl(data.videoUrl);
       setVideoTitle(data.title || "Presentation");
+      setVideoExpiresAt(data.expiresAt || null);
+      setSlideMarkers(data.slideMarkers || null);
       setPreparing(false);
       return true;
     } catch (err) {
@@ -434,19 +443,21 @@ export function ClientPresentationPage() {
       <div className="panel client-panel wide video-panel">
         {inlineError ? <p className="error">{inlineError}</p> : null}
         {videoUrl ? (
-          <SecureVideoPlayer
+          <PresentationPlayer
             sessionId={sessionId}
             src={videoUrl}
             title={videoTitle}
+            expiresAt={videoExpiresAt || undefined}
+            slideMarkers={slideMarkers}
             onUrlRefresh={(url) => setVideoUrl(url)}
             onUrlExpired={async () => {
-              setVideoUrl(null);
+              // Keep current src until a replacement URL is ready — nulling
+              // unmounts PresentationPlayer and resets lease state.
               setStarted(true);
               await loadVideoAccess();
             }}
             onPlaybackFailed={() => {
               // Failed before meaningful playback — do not burn viewing.
-              // Keep ready/retry path available by clearing URL and started if no lease.
             }}
           />
         ) : (

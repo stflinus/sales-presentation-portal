@@ -13,14 +13,20 @@ import {
 } from "../shared";
 import { db } from "./firebase";
 import { getActiveVideoForCompany, getCompany } from "./settings";
+import { computeInvitationExpiresAtIso } from "./presentationPolicy.pure";
 
 export {
+  capSignedUrlExpiresAtMs,
+  computeInvitationExpiresAtIso,
+  deviceResetMustNotTouch,
+  DEVICE_RESET_SAFE_FIELD_PREFIXES,
   genericAccessUnavailableMessage,
   REP_PRESENTATION_CONFIG_ERROR,
   sessionAccessPolicy,
   sessionIsExpired,
   sessionSingleViewBlocked,
   sessionViewingEntitlementConsumed,
+  shouldConsumeViewingEntitlementOnCompletion,
 } from "./presentationPolicy.pure";
 
 export function readUserPresentationSettings(
@@ -50,10 +56,7 @@ async function loadSelectableVideo(videoId: string, companyId: string) {
       "Assigned presentation video is not available. Please contact an administrator.",
     );
   }
-  if (
-    data.status !== VIDEO_STATUS.ACTIVE ||
-    data.active !== true
-  ) {
+  if (data.status !== VIDEO_STATUS.ACTIVE || data.active !== true) {
     throw new HttpsError(
       "failed-precondition",
       "Assigned presentation video is not active. Please contact an administrator.",
@@ -70,11 +73,15 @@ async function loadSelectableVideo(videoId: string, companyId: string) {
 
 /**
  * Resolve effective presentation settings for a NEW invitation.
- * Falls back to company defaults when user settings are absent.
+ * Policy + expiresAt are snapshotted at creation — the access clock starts here
+ * (create/send), not at link open, OTP, legal acceptance, or playback.
+ * Does not accept per-invite policy overrides from the representative.
  */
 export async function resolveInvitationPolicy(input: {
   profile: UserProfile;
   companyId: string;
+  /** Optional clock for tests; defaults to Date.now(). */
+  nowMs?: number;
 }): Promise<InvitationAccessPolicySnapshot & { videoTitle: string }> {
   const company = await getCompany(input.companyId);
   const settings = readUserPresentationSettings(input.profile);
@@ -97,21 +104,20 @@ export async function resolveInvitationPolicy(input: {
     videoTitle = String((fallback as Record<string, unknown>).title || videoTitle);
   }
 
-  const now = Date.now();
+  const now = input.nowMs ?? Date.now();
   const policyAppliedAt = new Date(now).toISOString();
-  let expiresAtMs: number;
-  if (accessPolicy === ACCESS_POLICY.SINGLE_VIEW) {
-    const ttlHours = company.defaultInviteTtlHours || 168;
-    expiresAtMs = now + ttlHours * 60 * 60 * 1000;
-  } else {
-    expiresAtMs = now + (accessDurationDays ?? DEFAULT_ACCESS_DURATION_DAYS) * 24 * 60 * 60 * 1000;
-  }
+  const expiresAt = computeInvitationExpiresAtIso({
+    accessPolicy,
+    accessDurationDays,
+    createdAtMs: now,
+    companyDefaultInviteTtlHours: company.defaultInviteTtlHours || 168,
+  });
 
   return {
     videoId,
     accessPolicy,
     accessDurationDays,
-    expiresAt: new Date(expiresAtMs).toISOString(),
+    expiresAt,
     policyAppliedAt,
     videoTitle,
   };

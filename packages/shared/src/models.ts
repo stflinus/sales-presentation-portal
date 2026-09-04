@@ -9,6 +9,7 @@ import type {
 } from "./session";
 import type { Permission, RoleId } from "./permissions";
 import type { NotificationProviderId } from "./notifications";
+import type { VideoProcessingState, SlideMarker } from "./videoProcessing";
 
 export type UtcIso = string;
 
@@ -172,6 +173,10 @@ export interface VideoAsset {
   uploadDate: UtcIso;
   uploadedBy: string;
   storagePath: string;
+  /** Optimized video path (transcoded for streaming). */
+  optimizedStoragePath?: string | null;
+  /** Final playback path (optimized or original if compatible). */
+  playbackStoragePath?: string | null;
   fileSize: number | null;
   durationSeconds: number | null;
   thumbnailPath: string | null;
@@ -192,6 +197,24 @@ export interface VideoAsset {
   deactivatedAt?: UtcIso | null;
   archivedAt?: UtcIso | null;
   deletedAt?: UtcIso | null;
+  /** Video processing pipeline state. */
+  processing?: VideoProcessingState | null;
+  /** Slide markers for chapter navigation. */
+  slideMarkers?: SlideMarker[] | null;
+  /** Scheduled permanent deletion timestamp (archived videos only). */
+  scheduledPermanentDeletionAt?: UtcIso | null;
+  /** Timestamp when video was restored from archive. */
+  restoredAt?: UtcIso | null;
+  /** Timestamp when video was permanently deleted. */
+  permanentlyDeletedAt?: UtcIso | null;
+  /** Deletion postponed until this timestamp (due to active sessions). */
+  deletionPostponedUntil?: UtcIso | null;
+  /** Reason deletion was postponed. */
+  deletionPostponedReason?: string | null;
+  /** True when doc is a lightweight historical record after permanent delete. */
+  tombstone?: boolean;
+  /** UID of user who initiated permanent deletion. */
+  deletedBy?: string | null;
 }
 
 export interface VideoVersionHistoryEntry {
@@ -317,6 +340,12 @@ export interface PresentationSession {
   healthStatus?: "healthy" | "warning" | "error" | null;
   healthSummary?: string | null;
   healthUpdatedAt?: UtcIso | null;
+  /**
+   * Last validated client interaction (open, authorize, legal, playback, etc.).
+   * Used for operational inactivity cleanup — never updated by staff/admin reads.
+   * Seeded to createdAt when the invitation is created.
+   */
+  lastMeaningfulClientActivityAt?: UtcIso | null;
   /** Snapshotted access policy — authoritative after creation. */
   accessPolicy?: import("./accessPolicy").AccessPolicy;
   accessDurationDays?: number | null;
@@ -326,6 +355,27 @@ export interface PresentationSession {
   analytics: SessionAnalytics;
   createdAt: UtcIso;
   updatedAt: UtcIso;
+  /** Viewer device/session binding (invitation-link claim; OTP fields deprecated). */
+  viewerAuth?: ViewerAuthState | null;
+}
+
+/** Viewer device binding state (HttpOnly cookie ↔ authorizedSessionId). */
+export interface ViewerAuthState {
+  /** Legacy name: set when the authorized browser is bound (not email OTP). */
+  emailVerifiedAt?: UtcIso | null;
+  authorizedSessionId?: string | null;
+  authorizedAt?: UtcIso | null;
+  /** @deprecated OTP removed from client flow. */
+  otpHash?: string | null;
+  /** @deprecated */
+  otpExpiresAt?: UtcIso | null;
+  /** @deprecated */
+  otpAttempts?: number;
+  /** @deprecated */
+  otpSentAt?: UtcIso | null;
+  deviceResetCount?: number;
+  lastDeviceResetAt?: UtcIso | null;
+  lastDeviceResetBy?: string | null;
 }
 
 export interface LegalDocumentSnapshot {

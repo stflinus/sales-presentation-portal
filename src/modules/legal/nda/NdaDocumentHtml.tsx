@@ -229,13 +229,9 @@ export function NdaDocumentHtml() {
       <section className="nda-signatures" aria-label="Signature blocks">
         <div className="nda-sign-block">
           <p>Client Name: <span className="nda-line" /></p>
-          <p>Signature: <span className="nda-line" /></p>
-          <p>Date: <span className="nda-line nda-line-short" /></p>
         </div>
         <div className="nda-sign-block">
           <p>Client Name: <span className="nda-line" /></p>
-          <p>Signature: <span className="nda-line" /></p>
-          <p>Date: <span className="nda-line nda-line-short" /></p>
         </div>
         <div className="nda-sign-block">
           <p>

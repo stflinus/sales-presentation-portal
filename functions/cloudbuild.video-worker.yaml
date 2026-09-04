@@ -1,0 +1,14 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.video-worker
+      - -t
+      - $_IMAGE
+      - .
+images:
+  - $_IMAGE
+substitutions:
+  _IMAGE: us-central1-docker.pkg.dev/sales-presentation-portal/gcf-artifacts/spp-video-process:latest
+timeout: 1200s

@@ -6,6 +6,9 @@ import {
   MAX_VIDEO_UPLOAD_SIZE,
   PERMISSIONS,
   VIDEO_STATUS,
+  VIDEO_PROCESSING_STATUS,
+  VIDEO_ARCHIVE_RECOVERY_MS,
+  isTimeLimitedPolicy,
   type VideoStatus,
 } from "../shared";
 import {
@@ -299,6 +302,8 @@ export const finalizeVideoUpload = onCall(
     status: VIDEO_STATUS.DRAFT,
     active: false,
     uploadFinalizedAt: nowIso,
+    // Queue video for async processing pipeline
+    "processing.status": VIDEO_PROCESSING_STATUS.UPLOADED,
     updatedAt: nowIso,
     updatedAtServer: FieldValue.serverTimestamp(),
   });
@@ -360,8 +365,13 @@ export const activateVideo = onCall(async (request) => {
     if (data.deleted === true || data.status === VIDEO_STATUS.DELETED) {
       throw new HttpsError("failed-precondition", "Cannot activate a deleted video.");
     }
+    if (data.permanentlyDeletedAt || data.tombstone === true) {
+      throw new HttpsError("failed-precondition", "Cannot activate a permanently deleted video.");
+    }
+    // Allow activating restored videos (archived=false after restore)
+    // Block activating still-archived videos
     if (data.archived === true || data.status === VIDEO_STATUS.ARCHIVED) {
-      throw new HttpsError("failed-precondition", "Restore from archive is not supported; upload a new version.");
+      throw new HttpsError("failed-precondition", "Restore the video from archive before activating.");
     }
     if (!data.storagePath) {
       throw new HttpsError(
@@ -401,6 +411,11 @@ export const activateVideo = onCall(async (request) => {
       allowExistingSessions: true,
       activatedAt: nowIso,
       deactivatedAt: null,
+      // Clear any archive-related fields on activation
+      archivedAt: null,
+      scheduledPermanentDeletionAt: null,
+      deletionPostponedUntil: null,
+      deletionPostponedReason: null,
       replacementReason: replacementReason || null,
       updatedAt: nowIso,
       updatedAtServer: FieldValue.serverTimestamp(),
@@ -493,6 +508,7 @@ export const archiveVideo = onCall(async (request) => {
   const { ctx, companyId: company } = await resolveCompany(request);
   const uid = ctx.uid;
   const nowIso = new Date().toISOString();
+  const scheduledDeletionAt = new Date(Date.now() + VIDEO_ARCHIVE_RECOVERY_MS).toISOString();
   const ref = db.collection("videos").doc(videoId);
 
   await db.runTransaction(async (tx) => {
@@ -508,8 +524,12 @@ export const archiveVideo = onCall(async (request) => {
       status: VIDEO_STATUS.ARCHIVED,
       active: false,
       archived: true,
-      allowExistingSessions: false,
+      // allowExistingSessions: true — existing clients may continue
+      allowExistingSessions: true,
       archivedAt: nowIso,
+      scheduledPermanentDeletionAt: scheduledDeletionAt,
+      deletionPostponedUntil: null,
+      deletionPostponedReason: null,
       updatedAt: nowIso,
       updatedAtServer: FieldValue.serverTimestamp(),
     });
@@ -522,8 +542,229 @@ export const archiveVideo = onCall(async (request) => {
     payload: { videoId, companyId: company },
   });
 
-  return { ok: true, videoId, status: VIDEO_STATUS.ARCHIVED };
+  await writeAuditEvent({
+    type: AUDIT_EVENT.VIDEO_DELETION_SCHEDULED,
+    actorUid: uid,
+    actorType: "administrator",
+    payload: {
+      videoId,
+      companyId: company,
+      scheduledPermanentDeletionAt: scheduledDeletionAt,
+      recoveryDays: 30,
+    },
+  });
+
+  return {
+    ok: true,
+    videoId,
+    status: VIDEO_STATUS.ARCHIVED,
+    scheduledPermanentDeletionAt: scheduledDeletionAt,
+  };
 });
+
+/** Restore a video from archive (before permanent deletion). */
+export const restoreVideo = onCall(async (request) => {
+  const videoId = String(request.data?.videoId || "").trim();
+  if (!videoId) throw new HttpsError("invalid-argument", "videoId required.");
+  const { ctx, companyId: company } = await resolveCompany(request);
+  const uid = ctx.uid;
+  const nowIso = new Date().toISOString();
+  const ref = db.collection("videos").doc(videoId);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "Video not found.");
+    const data = snap.data()!;
+    if (data.companyId !== company) {
+      throw new HttpsError("permission-denied", "Video belongs to another company.");
+    }
+    // Must be archived
+    if (data.archived !== true && data.status !== VIDEO_STATUS.ARCHIVED) {
+      throw new HttpsError("failed-precondition", "Video is not archived.");
+    }
+    // Must not be permanently deleted
+    if (data.permanentlyDeletedAt || data.tombstone === true) {
+      throw new HttpsError("failed-precondition", "Video has been permanently deleted and cannot be restored.");
+    }
+    tx.update(ref, {
+      status: VIDEO_STATUS.INACTIVE, // Admin must reactivate manually
+      active: false,
+      archived: false,
+      archivedAt: null,
+      scheduledPermanentDeletionAt: null,
+      deletionPostponedUntil: null,
+      deletionPostponedReason: null,
+      restoredAt: nowIso,
+      allowExistingSessions: true,
+      updatedAt: nowIso,
+      updatedAtServer: FieldValue.serverTimestamp(),
+    });
+  });
+
+  await writeAuditEvent({
+    type: AUDIT_EVENT.VIDEO_RESTORED,
+    actorUid: uid,
+    actorType: "administrator",
+    payload: { videoId, companyId: company },
+  });
+
+  return { ok: true, videoId, status: VIDEO_STATUS.INACTIVE, restoredAt: nowIso };
+});
+
+/**
+ * Check if any active sessions block video permanent deletion.
+ * Returns { safe: true } if deletion is safe, or { safe: false, reason, sessions } if blocked.
+ */
+async function assertVideoSafeToPermanentlyDelete(videoId: string): Promise<{
+  safe: boolean;
+  reason?: string;
+  activeSessionCount?: number;
+}> {
+  const nowMs = Date.now();
+  
+  // Query sessions for this video
+  const sessionsSnap = await db.collection("presentationSessions")
+    .where("videoId", "==", videoId)
+    .limit(100)
+    .get();
+
+  let activeCount = 0;
+  
+  for (const doc of sessionsSnap.docs) {
+    const session = doc.data();
+    const expiresAt = session.expiresAt ? new Date(session.expiresAt).getTime() : 0;
+    const status = session.status as string;
+    const accessPolicy = session.accessPolicy;
+    const viewingEntitlementConsumed = session.viewingEntitlementConsumed === true;
+    
+    // Terminal states that don't block deletion
+    const terminalStatuses = ["completed", "closed", "revoked", "expired"];
+    if (terminalStatuses.includes(status)) {
+      // For single_view: terminal means done
+      if (!isTimeLimitedPolicy(accessPolicy)) {
+        continue;
+      }
+      // For time_limited: still check expiration
+    }
+    
+    // Check based on policy type
+    if (isTimeLimitedPolicy(accessPolicy)) {
+      // Time-limited: active if expiresAt > now
+      if (expiresAt > nowMs) {
+        activeCount++;
+      }
+    } else {
+      // Single-view: active if not consumed and status not terminal
+      if (!viewingEntitlementConsumed && !terminalStatuses.includes(status)) {
+        activeCount++;
+      }
+    }
+  }
+  
+  if (activeCount > 0) {
+    return {
+      safe: false,
+      reason: `${activeCount} active session(s) are still using this video. Wait for sessions to expire or complete before permanent deletion.`,
+      activeSessionCount: activeCount,
+    };
+  }
+  
+  return { safe: true };
+}
+
+/**
+ * Perform permanent deletion of a video.
+ * Shared helper for manual deletion and scheduled cleanup.
+ */
+export async function performPermanentVideoDeletion(
+  videoId: string,
+  actorUid: string,
+): Promise<{ ok: boolean; videoId: string }> {
+  const ref = db.collection("videos").doc(videoId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "Video not found.");
+  }
+  
+  const data = snap.data()!;
+  const nowIso = new Date().toISOString();
+  
+  // Cancel any ongoing processing
+  const currentGeneration = (data.processing?.generation as number) ?? 0;
+  
+  // Delete Storage objects
+  const pathsToDelete: string[] = [];
+  if (data.storagePath) pathsToDelete.push(String(data.storagePath));
+  if (data.optimizedStoragePath) pathsToDelete.push(String(data.optimizedStoragePath));
+  if (data.playbackStoragePath && data.playbackStoragePath !== data.optimizedStoragePath) {
+    pathsToDelete.push(String(data.playbackStoragePath));
+  }
+  if (data.thumbnailPath) pathsToDelete.push(String(data.thumbnailPath));
+  
+  // Also delete any generation-specific optimized files
+  try {
+    const [files] = await bucket.getFiles({ prefix: `videos/${videoId}/` });
+    for (const file of files) {
+      if (!pathsToDelete.includes(file.name)) {
+        pathsToDelete.push(file.name);
+      }
+    }
+  } catch (err) {
+    logger.warn("list_video_files_failed", { videoId, error: String(err) });
+  }
+  
+  // Delete all storage files
+  for (const p of pathsToDelete) {
+    try {
+      await bucket.file(p).delete({ ignoreNotFound: true });
+    } catch (err) {
+      logger.warn("delete_video_file_failed", { videoId, path: p, error: String(err) });
+    }
+  }
+  
+  // Convert Firestore doc to tombstone
+  await ref.update({
+    status: VIDEO_STATUS.DELETED,
+    deleted: true,
+    tombstone: true,
+    permanentlyDeletedAt: nowIso,
+    deletedBy: actorUid,
+    active: false,
+    archived: false,
+    allowExistingSessions: false,
+    // Clear storage paths
+    storagePath: null,
+    optimizedStoragePath: null,
+    playbackStoragePath: null,
+    thumbnailPath: null,
+    // Keep minimal info: id, title, archivedAt, companyId
+    // Clear large processing blobs but keep probe summary
+    "processing.cancelled": true,
+    "processing.generation": currentGeneration + 1,
+    updatedAt: nowIso,
+    updatedAtServer: FieldValue.serverTimestamp(),
+  });
+  
+  await writeAuditEvent({
+    type: AUDIT_EVENT.VIDEO_PERMANENTLY_DELETED,
+    actorUid,
+    actorType: "administrator",
+    payload: {
+      videoId,
+      companyId: data.companyId,
+      deletedFiles: pathsToDelete.length,
+    },
+  });
+  
+  logger.info("video_permanently_deleted", {
+    videoId,
+    companyId: data.companyId,
+    deletedFiles: pathsToDelete.length,
+    by: actorUid,
+  });
+  
+  return { ok: true, videoId };
+}
 
 export const deleteVideo = onCall(async (request) => {
   const videoId = String(request.data?.videoId || "").trim();
@@ -540,14 +781,20 @@ export const deleteVideo = onCall(async (request) => {
   if (data.companyId !== company) {
     throw new HttpsError("permission-denied", "Video belongs to another company.");
   }
-  if (data.status === VIDEO_STATUS.ACTIVE || data.active === true) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Deactivate the active video before deleting it.",
-    );
+  
+  // Already a tombstone
+  if (data.tombstone === true || data.permanentlyDeletedAt) {
+    throw new HttpsError("failed-precondition", "Video has already been permanently deleted.");
   }
-
+  
+  // Soft delete path
   if (!permanent) {
+    if (data.status === VIDEO_STATUS.ACTIVE || data.active === true) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Deactivate the active video before deleting it.",
+      );
+    }
     await ref.update({
       status: VIDEO_STATUS.DELETED,
       active: false,
@@ -566,35 +813,67 @@ export const deleteVideo = onCall(async (request) => {
     return { ok: true, videoId, status: VIDEO_STATUS.DELETED, permanent: false };
   }
 
+  // Permanent deletion path
+  // Require VIDEOS_PERMANENT_DELETE permission
+  assertHasPermission(ctx, PERMISSIONS.VIDEOS_PERMANENT_DELETE);
+  
   if (!confirm) {
     throw new HttpsError(
       "failed-precondition",
       "Permanent deletion requires confirm: true.",
     );
   }
-  if (data.status !== VIDEO_STATUS.DELETED && data.deleted !== true) {
+  
+  // Must be archived or soft-deleted first
+  const isArchivedOrDeleted = 
+    data.archived === true || 
+    data.status === VIDEO_STATUS.ARCHIVED ||
+    data.deleted === true ||
+    data.status === VIDEO_STATUS.DELETED;
+    
+  if (!isArchivedOrDeleted) {
     throw new HttpsError(
       "failed-precondition",
-      "Soft-delete the video before permanent deletion.",
+      "Archive or soft-delete the video before permanent deletion.",
     );
   }
-
-  try {
-    await bucket.file(String(data.storagePath)).delete({ ignoreNotFound: true });
-    if (data.thumbnailPath) {
-      await bucket.file(String(data.thumbnailPath)).delete({ ignoreNotFound: true });
-    }
-  } catch {
-    // Continue metadata removal even if storage cleanup fails.
+  
+  // Safety check: no active sessions
+  const safetyCheck = await assertVideoSafeToPermanentlyDelete(videoId);
+  if (!safetyCheck.safe) {
+    // Postpone deletion
+    const postponeUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await ref.update({
+      deletionPostponedUntil: postponeUntil,
+      deletionPostponedReason: safetyCheck.reason,
+      updatedAt: nowIso,
+      updatedAtServer: FieldValue.serverTimestamp(),
+    });
+    
+    await writeAuditEvent({
+      type: AUDIT_EVENT.VIDEO_DELETION_POSTPONED,
+      actorUid: uid,
+      actorType: "administrator",
+      payload: {
+        videoId,
+        companyId: company,
+        reason: safetyCheck.reason,
+        activeSessionCount: safetyCheck.activeSessionCount,
+        postponedUntil: postponeUntil,
+      },
+    });
+    
+    return {
+      ok: false,
+      videoId,
+      permanent: false,
+      postponed: true,
+      reason: safetyCheck.reason,
+      activeSessionCount: safetyCheck.activeSessionCount,
+    };
   }
-  await ref.delete();
-  await writeAuditEvent({
-    type: AUDIT_EVENT.VIDEO_DELETED,
-    actorUid: uid,
-    actorType: "administrator",
-    payload: { videoId, companyId: company, permanent: true },
-  });
-  return { ok: true, videoId, permanent: true };
+
+  return performPermanentVideoDeletion(videoId, uid);
 });
 
 /** Admin preview: short-lived signed URL (never exposed to clients via listing). */

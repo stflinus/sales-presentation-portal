@@ -154,3 +154,142 @@
     background: white !important;
   }
 }
+
+/* Sequential legal flow styles */
+.legal-flow {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.legal-flow-step-indicator {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+}
+
+.legal-flow-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--line, #e5e7eb);
+}
+
+.legal-flow-dot.active {
+  background-color: var(--accent, #2563eb);
+}
+
+.legal-flow-dot.completed {
+  background-color: #10b981;
+}
+
+.legal-flow-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  max-width: 48rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.legal-flow-header {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line, #e5e7eb);
+  margin-bottom: 1rem;
+}
+
+.legal-flow-header h1 {
+  font-size: clamp(1.25rem, 4vw, 1.75rem);
+  margin: 0 0 0.25rem;
+}
+
+.legal-flow-document {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 1rem 0;
+  max-height: 50vh;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  background: var(--bg, #fff);
+  margin-bottom: 1rem;
+}
+
+.legal-flow-accept {
+  padding-top: 1rem;
+  border-top: 1px solid var(--line, #e5e7eb);
+}
+
+.legal-flow-checkbox {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  font-size: 1rem;
+  line-height: 1.5;
+  margin-bottom: 1rem;
+  cursor: pointer;
+}
+
+.legal-flow-checkbox input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.125rem;
+  flex-shrink: 0;
+}
+
+.legal-flow-btn {
+  display: block;
+  width: 100%;
+  padding: 1rem 1.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  background-color: var(--accent, #2563eb);
+  color: white;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.legal-flow-btn:hover:not(:disabled) {
+  background-color: var(--accent-dark, #1d4ed8);
+}
+
+.legal-flow-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.legal-flow-back {
+  display: block;
+  width: 100%;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  background: none;
+  border: none;
+  color: var(--accent, #2563eb);
+  cursor: pointer;
+  text-align: center;
+}
+
+.legal-flow-back:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.legal-flow-back:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .legal-flow-panel {
+    padding: 1rem;
+  }
+
+  .legal-flow-document {
+    max-height: 40vh;
+  }
+}

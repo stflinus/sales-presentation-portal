@@ -5,3 +5,4 @@ export * from "./models";
 export * from "./notifications";
 export * from "./accessPolicy";
 export * from "./activity";
+export * from "./videoProcessing";

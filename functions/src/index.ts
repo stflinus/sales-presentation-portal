@@ -21,6 +21,7 @@ export {
   activateVideo,
   deactivateVideo,
   archiveVideo,
+  restoreVideo,
   deleteVideo,
   getAdminVideoPreviewUrl,
   updateVideoMetadata,
@@ -41,6 +42,8 @@ export {
   assignStaffCompany,
   getStaffPresentationSettings,
   updateStaffPresentationSettings,
+  updateStaffUser,
+  deleteStaffUser,
 } from "./callables/manageUsers";
 export { retryInvitationNotification } from "./callables/retryNotification";
 export {
@@ -85,3 +88,24 @@ export {
   getPresentationActivityLog,
   exportPresentationActivityLog,
 } from "./callables/managePresentationActivity";
+export {
+  queueVideoProcessing,
+  optimizeExistingVideos,
+  onVideoProcessingQueued,
+  updateVideoSlideMarkers,
+} from "./callables/processVideo";
+export {
+  purgeExpiredArchivedVideos,
+  runArchivedVideoCleanup,
+  recoverStaleVideoProcessing,
+  runStaleVideoProcessingRecovery,
+  listVideoProcessingDiagnostics,
+} from "./callables/videoCleanup";
+export {
+  purgeInactivePresentations,
+  runPresentationOperationalCleanupNow,
+} from "./callables/presentationCleanup";
+export {
+  viewerAccessHttp,
+  resetAuthorizedDevice,
+} from "./callables/viewerAccess";

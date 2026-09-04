@@ -38,11 +38,17 @@ interface CreateInviteRequest {
   /** Used when creating a new contact inline. */
   clientName?: string;
   clientEmail?: string;
+  /**
+   * Intentionally omitted: accessPolicy / accessDurationDays / videoId.
+   * Policy is always inherited from the rep's owner-assigned presentationSettings
+   * via resolveInvitationPolicy and snapshotted onto the invite/session.
+   */
 }
 
 /**
- * Create invitation for a Contact + queue email via NotificationService.
- * Never sends email directly — provider is selected by platform settings.
+ * Create invitation for a Contact.
+ * Access policy is resolved server-side from the acting representative's
+ * administrator-assigned presentation settings — reps cannot override it here.
  */
 export const createInvite = onCall(async (request) => {
   const ctx = await loadStaffContext(request);
@@ -253,6 +259,8 @@ export const createInvite = onCall(async (request) => {
       representativeId: uid,
       videoVersionId: videoId,
     },
+    /** Inactivity cleanup clock starts at invite creation until first client action. */
+    lastMeaningfulClientActivityAt: nowIso,
     createdAt: nowIso,
     updatedAt: nowIso,
     appVersion: APP_VERSION,

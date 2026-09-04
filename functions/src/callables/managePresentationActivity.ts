@@ -1,4 +1,5 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { FieldValue } from "firebase-admin/firestore";
 import {
   ACTIVITY_EVENT,
   ACTIVITY_SEVERITY,
@@ -113,6 +114,20 @@ export const logClientActivity = onCall(async (request) => {
     cloudFunction: "logClientActivity",
     payload: { clientReported: true },
   });
+
+  const nowIso = new Date().toISOString();
+  await db
+    .collection("presentationSessions")
+    .doc(sessionId)
+    .set(
+      {
+        lastMeaningfulClientActivityAt: nowIso,
+        updatedAt: nowIso,
+        updatedAtServer: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+    .catch(() => undefined);
 
   return { ok: true };
 });

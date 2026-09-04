@@ -139,6 +139,22 @@ export function SessionDetailPage() {
     }
   }
 
+  async function resetAuthorizedDevice() {
+    if (!sessionId) return;
+    setError(null);
+    try {
+      const callable = httpsCallable(functions, "resetAuthorizedDevice");
+      const result = await callable({ sessionId });
+      const data = result.data as { message?: string };
+      setMessage(
+        data.message ||
+          "Authorized device has been reset. The client can now access from a new device.",
+      );
+    } catch (err) {
+      setError(staffFriendlyError(err, "Reset failed. Please try again."));
+    }
+  }
+
   async function confirmDeletePresentation() {
     if (!sessionId || deleteConfirmText !== "DELETE") return;
     setDeleteBusy(true);
@@ -277,6 +293,21 @@ export function SessionDetailPage() {
         <h2>Interrupted viewing</h2>
         <button type="button" className="ghost" onClick={() => void resetInterrupted()}>
           Reset interrupted session
+        </button>
+      </section>
+
+      <section className="panel">
+        <h2>Device Authorization</h2>
+        <p className="muted small">
+          If the client needs to access from a new device, reset their authorized device.
+          This allows them to re-verify their email on a different browser or device.
+        </p>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => void resetAuthorizedDevice()}
+        >
+          Reset Authorized Device
         </button>
       </section>
 
