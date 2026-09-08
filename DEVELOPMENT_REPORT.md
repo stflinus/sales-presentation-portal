@@ -1301,3 +1301,84 @@ No dedicated Sept 8 implementation pass addressed buffering residual, NDA residu
 - Clients continue to stream the pathological optimized MP4 until a re-encode is approved and completed
 - NDA PDF v1.1.0 is a generated text twin of the plain-text body (not a redesign of the original counsel PDF layout)
 - Buffering event volume may increase activity-log noise until throttled further if needed
+
+---
+
+## Part 11 — September 8, 2026 optimizer fix (FPS normalize + output validation)
+
+**Date:** September 8, 2026  
+**Branch:** `cursor/invitation-email-generator`  
+**Scope:** Fix Cloud Run video worker so pathological source FPS (e.g. 1000) cannot produce invalid client playback assets. **Dan was NOT reprocessed.**
+
+### Pathological root cause (confirmed)
+
+Dan video `PcMlyjYFumQfRURoy1dJ` source WebM reports `frameRate: 1000`. Prior optimizer applied scale-only FFmpeg without FPS clamp → optimized MP4 with `nb_frames ≈ 1,348,996`, ~594 MB, ~3.52 Mbps. Client played that asset; Admin Preview used smaller WebM source.
+
+### IMPLEMENTED LOCALLY
+
+#### Frame-rate normalization
+- `normalizeOutputFrameRate`: ≤60 preserve; >60 or unknown → **30 FPS**
+- Probe keeps `reportedFrameRate` + effective `frameRate` + `frameRateNote`
+- Encode always uses `-vf fps=<selected>,scale=…` (cannot inherit bogus timestamps)
+
+#### Bitrate / profile
+- `VIDEO_STREAMING_PROFILE.targetVideoBitrateKbps`: **3500 → 2250**
+- AAC **128 kbps**; max height 1080; faststart retained
+- Compatible skip threshold remains 2× target (4500 kbps)
+
+#### Output validation (critical)
+- After FFmpeg, probe local output and `validateOptimizedOutput` **before** upload/activation
+- Rejects pathological FPS, frame-count vs duration×fps mismatch, duration drift, missing faststart, wrong codecs
+- On failure: `OUTPUT_VALIDATION_FAILED` + VID-* code; **does not** change `playbackStoragePath`; preserves prior asset; Retry remains available
+
+#### Already-compatible path
+- Sane H.264/AAC/MP4/faststart/≤1080p/sane FPS still → `SKIPPED_COMPATIBLE` (no forced re-encode)
+
+#### Admin diagnostics
+- Shows `probeResult.frameRateNote` (e.g. “Source reported 1000 FPS. Normalized to 30 FPS…”)
+
+### Files changed
+- `packages/shared/src/videoProcessing.ts` — profile, probe fields, `OUTPUT_VALIDATION_FAILED`
+- `functions/src/lib/videoOptimize.pure.ts` — **new**
+- `functions/src/lib/videoProbe.pure.ts` — FPS in evaluation
+- `functions/src/callables/processVideo.ts` — probe/encode/validate-before-activate
+- `src/modules/admin/VideoLibraryPage.tsx` — frame-rate note
+- `tests/unit/videoOptimize.test.ts` — **new**; `videoOptimization.test.ts` updated
+
+### Tests / build
+- `npm run build:shared` — pass
+- `npm run build:functions` — pass
+- `npm run build` — pass
+- `npm test` — **225** tests pass (FPS 24/30/60/1000/unknown, bitrate, compatible skip, validation, activation gate)
+
+### DEPLOYED
+| Component | Detail |
+|-----------|--------|
+| Cloud Run Job `spp-video-process` | Image `us-central1-docker.pkg.dev/sales-presentation-portal/gcf-artifacts/spp-video-process:20260908172718` |
+| Image digest | `sha256:936f8a33312df858fdcf3f5031d314d6b29627cade2c9a6ce33ab64d1ea31d6e` |
+| Job observedGeneration | **5** (Ready) |
+| Hosting | Admin frame-rate note UI (`index-CaPgrk-5.js`) |
+| Cloud Functions dispatcher | Unchanged (still dispatches same job name) |
+
+### MANUALLY VERIFIED IN PRODUCTION
+- Job container image points at `:20260908172718`
+- Dan `PcMlyjYFumQfRURoy1dJ`: status **ready**, generation **5**, optimized object still `2026-08-24T18:06:03.001Z` / **593662335** bytes — **untouched**
+- No videos in uploaded/analyzing/optimizing/… queues (`inProgressCount: 0`)
+- Latest job execution remains the Aug 24 success (no new execution started by this deploy)
+
+### MANUAL REPROCESS REQUIRED
+- **Optimizer is ready. Dan can now be manually reprocessed.**
+- Do this from Admin → Video Library → Reprocess Video for `PcMlyjYFumQfRURoy1dJ` only when ready
+- Expect ~30 FPS CFR, ~40.5k frames for ~22.5 min, smaller streaming MP4, validation gate before path flip
+
+### STILL UNRESOLVED until Dan reprocess + client soak
+- Client buffering on the current 1000-fps optimized asset
+- Fresh invitation smooth-playback confirmation
+
+### Remaining risks
+- First production reprocess of a 1000-FPS WebM may still take a long wall-clock time (Cloud Run job timeout 3h)
+- Validation tolerances (~25% frame-count slack) should catch pathological cases without rejecting normal CFR rounding
+- Compatible videos with only metadata FPS >60 will now be re-encoded when queued (intentional)
+
+### Git
+- Commit hash recorded after push (see git log / end of this Part after commit)

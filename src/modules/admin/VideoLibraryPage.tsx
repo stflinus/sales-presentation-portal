@@ -220,6 +220,9 @@ function ProcessingProgressBlock({
           {eta ? <div>Estimated remaining: ~{eta}</div> : null}
           {p.startedAt ? <div>Started: {formatDateTime(p.startedAt)}</div> : null}
           {p.jobId ? <div>Job: {p.jobId}</div> : null}
+          {p.probeResult?.frameRateNote ? (
+            <div>{String(p.probeResult.frameRateNote).slice(0, 220)}</div>
+          ) : null}
           {isFailed && p.failureCategory ? (
             <div>Reason: {String(p.failureCategory).replace(/_/g, " ")}</div>
           ) : null}

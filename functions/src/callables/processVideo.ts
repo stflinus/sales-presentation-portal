@@ -26,6 +26,13 @@ import { assertHasPermission, loadStaffContext, resolveActingCompanyId } from ".
 import { writeAuditEvent } from "../lib/audit";
 import { bucket, db } from "../lib/firebase";
 import { evaluateStreamingProfile, filterSlideTimestamps, buildSlideMarkers } from "../lib/videoProbe.pure";
+import {
+  buildOptimizeEncodePlan,
+  normalizeOutputFrameRate,
+  parseFrameRateFraction,
+  shouldActivateOptimizedPlayback,
+  validateOptimizedOutput,
+} from "../lib/videoOptimize.pure";
 import { getPortalSettings } from "../lib/settings";
 import { dispatchVideoProcessJob } from "../lib/dispatchVideoProcessJob";
 import {
@@ -34,6 +41,7 @@ import {
   sanitizeProcessingErrorText,
   writeVideoProcessingDiagnostic,
 } from "../lib/videoProcessingDiagnostics";
+import { open as fsOpen } from "node:fs/promises";
 
 const WORKER_RUNTIME = "cloud_run_job";
 
@@ -95,6 +103,39 @@ async function runCommand(
   });
 }
 
+/** Walk ISO-BMFF atoms in the first MB to see if moov precedes mdat. */
+async function detectLocalMp4FastStart(filePath: string): Promise<boolean | null> {
+  try {
+    const fh = await fsOpen(filePath, "r");
+    try {
+      const buf = Buffer.alloc(1024 * 1024);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      const data = buf.subarray(0, bytesRead);
+      let i = 0;
+      while (i + 8 <= data.length) {
+        let size = data.readUInt32BE(i);
+        const type = data.toString("ascii", i + 4, i + 8);
+        let header = 8;
+        if (size === 1 && i + 16 <= data.length) {
+          size = Number(data.readBigUInt64BE(i + 8));
+          header = 16;
+        } else if (size === 0) {
+          break;
+        }
+        if (!Number.isFinite(size) || size < header) break;
+        if (type === "moov") return true;
+        if (type === "mdat") return false;
+        i += size;
+      }
+      return null;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 /** Probe video with ffprobe */
 async function probeVideo(inputPath: string): Promise<VideoProbeResult> {
   const ffprobe = getFfprobePath();
@@ -117,16 +158,20 @@ async function probeVideo(inputPath: string): Promise<VideoProbeResult> {
       audioStream?.duration ||
       "0",
   );
-  // Some WebM/Matroska files report bogus r_frame_rate like "1000/1". Prefer avg_frame_rate.
-  const frameRateStr =
-    videoStream?.avg_frame_rate && videoStream.avg_frame_rate !== "0/0"
-      ? videoStream.avg_frame_rate
-      : videoStream?.r_frame_rate || "0/1";
-  const [num, den] = frameRateStr.split("/").map((n: string) => parseInt(n, 10));
-  let frameRate = den > 0 ? num / den : null;
-  if (frameRate != null && (frameRate > 120 || frameRate <= 0)) {
-    frameRate = null;
-  }
+  // Prefer avg_frame_rate, then r_frame_rate — keep raw report even when pathological.
+  const reportedFromAvg = parseFrameRateFraction(videoStream?.avg_frame_rate);
+  const reportedFromR = parseFrameRateFraction(videoStream?.r_frame_rate);
+  const reportedFrameRate =
+    reportedFromAvg != null && reportedFromAvg > 0
+      ? reportedFromAvg
+      : reportedFromR;
+  const fpsNorm = normalizeOutputFrameRate(reportedFrameRate);
+  const nbFramesRaw = videoStream?.nb_frames;
+  const nbFramesParsed =
+    nbFramesRaw != null && nbFramesRaw !== "N/A"
+      ? parseInt(String(nbFramesRaw), 10)
+      : NaN;
+  const nbFrames = Number.isFinite(nbFramesParsed) ? nbFramesParsed : null;
 
   const width = parseInt(videoStream?.width || "0", 10);
   const height = parseInt(videoStream?.height || "0", 10);
@@ -144,19 +189,22 @@ async function probeVideo(inputPath: string): Promise<VideoProbeResult> {
 
   // Check for faststart (moov atom position)
   let hasFastStart = false;
-  try {
-    const { stdout: atomsOutput } = await runCommand(ffprobe, [
-      "-v", "quiet",
-      "-show_entries", "format_tags=major_brand",
-      "-print_format", "json",
-      inputPath,
-    ]);
-    const atomsData = JSON.parse(atomsOutput);
-    // If we can read the file quickly, it likely has faststart
-    // A more precise check would require parsing atom positions
-    hasFastStart = Boolean(atomsData.format?.tags?.major_brand);
-  } catch {
-    hasFastStart = false;
+  const atomFastStart = await detectLocalMp4FastStart(inputPath);
+  if (atomFastStart != null) {
+    hasFastStart = atomFastStart;
+  } else {
+    try {
+      const { stdout: atomsOutput } = await runCommand(ffprobe, [
+        "-v", "quiet",
+        "-show_entries", "format_tags=major_brand",
+        "-print_format", "json",
+        inputPath,
+      ]);
+      const atomsData = JSON.parse(atomsOutput);
+      hasFastStart = Boolean(atomsData.format?.tags?.major_brand);
+    } catch {
+      hasFastStart = false;
+    }
   }
 
   // Prefer container duration; fall back to decoding duration via ffprobe -count_frames is too slow.
@@ -217,7 +265,11 @@ async function probeVideo(inputPath: string): Promise<VideoProbeResult> {
     containerFormat,
     videoBitrateKbps,
     audioBitrateKbps,
-    frameRate,
+    frameRate: fpsNorm.selectedFps,
+    reportedFrameRate: reportedFrameRate ?? null,
+    frameRateNormalized: fpsNorm.wasNormalized,
+    frameRateNote: fpsNorm.note,
+    nbFrames,
     hasFastStart,
   };
 }
@@ -236,13 +288,14 @@ async function optimizeVideo(
   probe: VideoProbeResult,
   onProgress?: (info: FfmpegProgressInfo) => Promise<void>,
   shouldAbort?: () => Promise<boolean>,
-): Promise<void> {
+): Promise<{ selectedFps: number; videoFilter: string; maxrateKbps: number }> {
   const ffmpeg = getFfmpegPath();
-  const profile = VIDEO_STREAMING_PROFILE;
+  const plan = buildOptimizeEncodePlan(probe);
   const totalSeconds = probe.durationSeconds > 0 ? probe.durationSeconds : null;
   const durationMs = totalSeconds != null ? totalSeconds * 1000 : null;
 
   // veryfast: production evidence showed medium+540s CF timeout killed overnight jobs.
+  // Always apply fps=… so pathological WebM timestamps cannot produce 1000fps output.
   const args = [
     "-y",
     "-i", inputPath,
@@ -250,11 +303,11 @@ async function optimizeVideo(
     "-preset", "veryfast",
     "-threads", "0",
     "-crf", "23",
-    "-maxrate", `${profile.targetVideoBitrateKbps}k`,
-    "-bufsize", `${profile.targetVideoBitrateKbps * 2}k`,
-    "-vf", `scale=-2:'min(${profile.maxHeight},ih)'`,
+    "-maxrate", `${plan.maxrateKbps}k`,
+    "-bufsize", `${plan.bufsizeKbps}k`,
+    "-vf", plan.videoFilter,
     "-c:a", "aac",
-    "-b:a", "128k",
+    "-b:a", `${plan.audioBitrateKbps}k`,
     "-movflags", "+faststart",
     "-progress", "pipe:1",
     "-nostats",
@@ -394,6 +447,12 @@ async function optimizeVideo(
       finish(() => reject(err));
     });
   });
+
+  return {
+    selectedFps: plan.normalization.selectedFps,
+    videoFilter: plan.videoFilter,
+    maxrateKbps: plan.maxrateKbps,
+  };
 }
 
 /** Detect slide changes using scene detection */
@@ -680,8 +739,16 @@ export async function processVideoDocument(
       if (!(await shouldContinue())) return;
 
       // Optimize video
-      logger.info("video_process_optimize", { videoId, jobId, totalSeconds: progressState.totalSeconds });
-      await optimizeVideo(
+      logger.info("video_process_optimize", {
+        videoId,
+        jobId,
+        totalSeconds: progressState.totalSeconds,
+        reportedFrameRate: probe.reportedFrameRate ?? null,
+        selectedOutputFps: evaluation.selectedOutputFps,
+        frameRateNote: evaluation.frameRateNote,
+        targetVideoBitrateKbps: VIDEO_STREAMING_PROFILE.targetVideoBitrateKbps,
+      });
+      const encodePlan = await optimizeVideo(
         inputFile,
         outputFile,
         probe,
@@ -696,7 +763,68 @@ export async function processVideoDocument(
         shouldContinue,
       );
 
-      // Upload to staging path first
+      // Validate local output BEFORE uploading / activating playback paths.
+      let outProbe: VideoProbeResult;
+      try {
+        outProbe = await probeVideo(outputFile);
+      } catch (probeErr) {
+        throw Object.assign(
+          new Error(
+            `OUTPUT_VALIDATION_FAILED: unable to probe encoded output (${sanitizeProcessingErrorText(probeErr)})`,
+          ),
+          {
+            failureCategory:
+              VIDEO_PROCESSING_FAILURE_CATEGORY.OUTPUT_VALIDATION_FAILED,
+          },
+        );
+      }
+      const outputStat = await fs.stat(outputFile);
+      const validation = validateOptimizedOutput({
+        output: outProbe,
+        source: probe,
+        selectedOutputFps: encodePlan.selectedFps,
+        outputBytes: outputStat.size,
+      });
+      logger.info("video_process_output_validation", {
+        videoId,
+        ok: validation.ok,
+        reasons: validation.reasons,
+        expectedFrameCount: validation.expectedFrameCount,
+        metrics: validation.metrics,
+        selectedFps: encodePlan.selectedFps,
+        maxrateKbps: encodePlan.maxrateKbps,
+        outputBytes: outputStat.size,
+      });
+      if (
+        !shouldActivateOptimizedPlayback({
+          validationOk: validation.ok,
+          encodedNewAsset: true,
+        })
+      ) {
+        try {
+          await fs.unlink(outputFile);
+        } catch {
+          /* ignore */
+        }
+        throw Object.assign(
+          new Error(
+            `OUTPUT_VALIDATION_FAILED: ${validation.reasons.join("; ") || "encoded output rejected"}`,
+          ),
+          {
+            failureCategory:
+              VIDEO_PROCESSING_FAILURE_CATEGORY.OUTPUT_VALIDATION_FAILED,
+          },
+        );
+      }
+
+      if (outProbe.durationSeconds > 0) {
+        probe = {
+          ...probe,
+          durationSeconds: outProbe.durationSeconds,
+        };
+      }
+
+      // Upload to staging path only after validation passes
       await bucket.upload(outputFile, {
         destination: stagingOutputPath,
         metadata: { contentType: "video/mp4" },
@@ -733,32 +861,13 @@ export async function processVideoDocument(
         return;
       }
 
-      logger.info("video_process_optimized", { videoId, optimizedPath: canonicalPath });
-
-      // Re-probe the encoded file so duration/progress/slides are not stuck at 0
-      // when the source WebM omitted format.duration (common for Matroska/WebM).
-      try {
-        const outProbe = await probeVideo(outputFile);
-        if (outProbe.durationSeconds > 0) {
-          probe = {
-            ...probe,
-            durationSeconds: outProbe.durationSeconds,
-          };
-        }
-        logger.info("video_process_optimized_probe", {
-          videoId,
-          durationSeconds: outProbe.durationSeconds,
-          videoCodec: outProbe.videoCodec,
-          audioCodec: outProbe.audioCodec,
-          containerFormat: outProbe.containerFormat,
-          hasFastStart: outProbe.hasFastStart,
-        });
-      } catch (probeErr) {
-        logger.warn("video_process_optimized_probe_failed", {
-          videoId,
-          error: String(probeErr),
-        });
-      }
+      logger.info("video_process_optimized", {
+        videoId,
+        optimizedPath: canonicalPath,
+        outputFps: validation.metrics.outputFps,
+        outputNbFrames: validation.metrics.outputNbFrames,
+        outputBytes: outputStat.size,
+      });
     }
 
     // Update status to detecting slides

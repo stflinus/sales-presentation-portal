@@ -44,6 +44,7 @@ export const VIDEO_PROCESSING_FAILURE_CATEGORY = {
   PROCESSING_TIMEOUT: "PROCESSING_TIMEOUT",
   FFMPEG_FAILED: "FFMPEG_FAILED",
   FFPROBE_FAILED: "FFPROBE_FAILED",
+  OUTPUT_VALIDATION_FAILED: "OUTPUT_VALIDATION_FAILED",
   STORAGE_READ_FAILED: "STORAGE_READ_FAILED",
   STORAGE_WRITE_FAILED: "STORAGE_WRITE_FAILED",
   INSUFFICIENT_TEMP_STORAGE: "INSUFFICIENT_TEMP_STORAGE",
@@ -97,7 +98,13 @@ export const VIDEO_STREAMING_PROFILE = {
   videoCodec: "h264",
   audioCodec: "aac",
   maxHeight: 1080,
-  targetVideoBitrateKbps: 3500,
+  /** ~2000–2500 kbps presentation streaming target (1080p). */
+  targetVideoBitrateKbps: 2250,
+  targetAudioBitrateKbps: 128,
+  /** Source FPS above this is treated as pathological / unreliable. */
+  maxSaneFrameRate: 60,
+  /** Default CFR when source FPS is unknown or pathological. */
+  defaultOutputFrameRate: 30,
   fastStart: true,
 } as const;
 
@@ -111,7 +118,16 @@ export interface VideoProbeResult {
   containerFormat: string;
   videoBitrateKbps: number | null;
   audioBitrateKbps: number | null;
+  /** Effective FPS used for encode decisions (normalized when pathological). */
   frameRate: number | null;
+  /** Raw container/timestamp FPS before sanitization. */
+  reportedFrameRate?: number | null;
+  /** True when effective FPS differs from a pathological/unknown report. */
+  frameRateNormalized?: boolean;
+  /** Staff-visible note, e.g. "Source reported 1000 FPS. Normalized to 30 FPS…" */
+  frameRateNote?: string | null;
+  /** Stream nb_frames when available (important for output validation). */
+  nbFrames?: number | null;
   hasFastStart: boolean;
 }
 

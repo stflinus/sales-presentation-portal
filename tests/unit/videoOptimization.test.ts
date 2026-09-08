@@ -77,6 +77,14 @@ describe("evaluateStreamingProfile", () => {
     expect(result.reasons.some((r) => r.includes("Bitrate"))).toBe(true);
   });
 
+  it("does not require optimization for bitrate under 2× streaming target", () => {
+    const okBitrate: VideoProbeResult = {
+      ...compatibleProbe,
+      videoBitrateKbps: 4000, // target 2250 × 2 = 4500
+    };
+    expect(evaluateStreamingProfile(okBitrate).needsOptimization).toBe(false);
+  });
+
   it("accepts H.264 variant codecs (AVC)", () => {
     const avcProbe: VideoProbeResult = {
       ...compatibleProbe,

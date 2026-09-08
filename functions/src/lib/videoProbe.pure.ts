@@ -9,11 +9,14 @@ import type {
   VideoProcessingStatus,
 } from "../shared";
 import { VIDEO_STREAMING_PROFILE, VIDEO_PROCESSING_STATUS, SLIDE_RESTART_THRESHOLD_SECONDS } from "../shared";
+import { normalizeOutputFrameRate } from "./videoOptimize.pure";
 
 export interface StreamingEvaluation {
   needsOptimization: boolean;
   reasons: string[];
   targetProfile: typeof VIDEO_STREAMING_PROFILE;
+  frameRateNote: string | null;
+  selectedOutputFps: number;
 }
 
 /**
@@ -25,6 +28,9 @@ export function evaluateStreamingProfile(
 ): StreamingEvaluation {
   const reasons: string[] = [];
   const profile = VIDEO_STREAMING_PROFILE;
+  const reported =
+    probe.reportedFrameRate != null ? probe.reportedFrameRate : probe.frameRate;
+  const fpsNorm = normalizeOutputFrameRate(reported, profile);
 
   // Check container format (must be MP4)
   const container = probe.containerFormat.toLowerCase();
@@ -56,7 +62,7 @@ export function evaluateStreamingProfile(
     reasons.push(`Height ${probe.height}px exceeds ${profile.maxHeight}px`);
   }
 
-  // Check bitrate (target 3500kbps, allow up to 2x)
+  // Check bitrate (allow up to 2× streaming target)
   if (
     probe.videoBitrateKbps &&
     probe.videoBitrateKbps > profile.targetVideoBitrateKbps * 2
@@ -66,10 +72,17 @@ export function evaluateStreamingProfile(
     );
   }
 
+  // Pathological / unknown FPS requires a controlled CFR encode
+  if (fpsNorm.wasNormalized) {
+    reasons.push(fpsNorm.note || "Source frame rate requires normalization");
+  }
+
   return {
     needsOptimization: reasons.length > 0,
     reasons,
     targetProfile: profile,
+    frameRateNote: fpsNorm.note,
+    selectedOutputFps: fpsNorm.selectedFps,
   };
 }
 
