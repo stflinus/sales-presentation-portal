@@ -1384,3 +1384,75 @@ Dan video `PcMlyjYFumQfRURoy1dJ` source WebM reports `frameRate: 1000`. Prior op
 - Feature commit: `4a425b3904660aa278eb7de42f54a79d75af7055`
 - Report HEAD: `1f2f76e37ac91e7c371a34ce6ae345707322f46d`
 - Origin synchronized (0 ahead / 0 behind); clean working tree
+
+---
+
+## Part 12 — September 8, 2026 VID-D534B5 encode-guard polarity fix
+
+**Date:** September 8, 2026  
+**Video:** Dan’s Presentation `PcMlyjYFumQfRURoy1dJ`  
+**Error ID:** `VID-D534B5`  
+**Job ID:** `job_PcMlyjYFumQfRURoy1dJ_6_mtsz03wp`  
+**Cloud Run execution:** `spp-video-process-z4fjm` (failed)
+
+### INVESTIGATED
+
+| Question | Finding |
+|----------|---------|
+| Generation queued | **6** (`queueVideoProcessing` reprocess) |
+| Generation worker received | **6** (`expectedGeneration=6` in `video_worker_start`) |
+| Did generation change mid-run? | **No** — still 6 after failure |
+| Was `processing.cancelled` set? | **No** — remains `false` |
+| Second reprocess / stale recovery? | **No** — history shows one queued + one failed for attempt 2; no generation bump |
+| Deployment interfere? | Worker image was new (Part 11) but did not change generation |
+| Why UNKNOWN? | Cancel error lacked `failureCategory`; `classifyFfmpegFailure` did not map the message |
+
+**Timeline (UTC):**
+- 17:55:42 requested / 17:55:45 queued
+- 17:56:01 Cloud Run execution `spp-video-process-z4fjm` started
+- 17:58:24 worker start + download
+- 17:58:29 probe (reported 1000 FPS → normalize 30)
+- 17:58:30 optimize started → **immediate** cancel from `maybeEmit`
+- Stack: `maybeEmit` → `Processing cancelled (generation superseded or cancelled).`
+
+**Exact root cause:** `optimizeVideo(..., shouldContinue)` was bound to a parameter named `shouldAbort`, and the encode loop aborted when the callback returned **true**. Healthy `shouldContinue() === true` therefore **self-killed** the encode on the first FFmpeg progress tick. Generation/cancelled state were never wrong — the guard polarity was inverted.
+
+Part 11 did not invent the inverted wiring (present since the Cloud Run worker baseline), but the new worker image was the first production run that hit the abort path immediately after FPS-normalization encode start.
+
+**Playback asset:** unchanged (`optimized.mp4` still `2026-08-24T18:06:03.001Z`, 593,662,335 bytes).
+
+### IMPLEMENTED LOCALLY
+- Rename encode guard to `shouldContinue`; abort only via `shouldKillEncodeForContinueGuard(continueAllowed)` when **false**
+- Attach `PROCESSING_CANCELLED` on legitimate cancel rejects
+- Classify cancel/supersede messages → `PROCESSING_CANCELLED` / `GENERATION_SUPERSEDED` (not UNKNOWN)
+- Regression tests for VID-D534B5 polarity + classifier
+
+### DEPLOYED
+- Cloud Run Job image: `us-central1-docker.pkg.dev/sales-presentation-portal/gcf-artifacts/spp-video-process:20260908181435`
+- Digest: `sha256:6784949c7029f9c3779c06ef9c0eaa588eb5cb000822ddb0b8afd0cb6c65ad9f`
+- Hosting/functions dispatcher: not required for this worker-only fix
+
+### MANUALLY VERIFIED IN PRODUCTION
+- Job points at `:20260908181435`
+- Dan playback path/size/timestamp **untouched**
+- `inProgressCount: 0` (no job running)
+- Firestore: status `failed`, generation `6`, `cancelled: false`, safe for manual retry
+
+### MANUAL RETRY REQUIRED
+**Safe to click Retry Processing for Dan.**
+
+### Files changed
+- `functions/src/callables/processVideo.ts`
+- `functions/src/lib/videoOptimize.pure.ts`
+- `functions/src/lib/videoProcessingDiagnostics.ts`
+- `packages/shared/src/videoProcessing.ts` (+ synced functions shared)
+- `tests/unit/videoOptimize.test.ts`
+- `tests/unit/videoProcessingFailureClassify.test.ts`
+
+### Tests / build
+- shared / functions / frontend build — pass
+- `npm test` — **229** pass
+
+### Remaining risks
+- Dan still serves the old pathological optimized MP4 until a successful reprocess
+- First successful encode may take a long time (~22 min source WebM → 30 FPS H.264)

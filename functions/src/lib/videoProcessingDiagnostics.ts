@@ -24,6 +24,18 @@ export function sanitizeProcessingErrorText(input: unknown, max = 800): string {
 
 export function classifyFfmpegFailure(err: unknown): VideoProcessingFailureCategory {
   const msg = sanitizeProcessingErrorText(err, 2000).toLowerCase();
+  if (
+    msg.includes("generation superseded") ||
+    msg.includes("processing cancelled")
+  ) {
+    if (msg.includes("generation")) {
+      return "GENERATION_SUPERSEDED";
+    }
+    return "PROCESSING_CANCELLED";
+  }
+  if (msg.includes("output_validation_failed")) {
+    return "OUTPUT_VALIDATION_FAILED";
+  }
   if (msg.includes("processing_stalled") || msg.includes("no meaningful progress")) {
     return "PROCESSING_STALLED";
   }

@@ -5,6 +5,7 @@ import {
   normalizeOutputFrameRate,
   parseFrameRateFraction,
   shouldActivateOptimizedPlayback,
+  shouldKillEncodeForContinueGuard,
   validateOptimizedOutput,
 } from "../../functions/src/lib/videoOptimize.pure";
 import { evaluateStreamingProfile } from "../../functions/src/lib/videoProbe.pure";
@@ -219,5 +220,16 @@ describe("shouldActivateOptimizedPlayback", () => {
         encodedNewAsset: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldKillEncodeForContinueGuard (VID-D534B5 regression)", () => {
+  it("does NOT kill encode when continue guard allows (healthy generation)", () => {
+    // Bug: treating shouldContinue()===true as abort killed Dan's gen-6 job immediately.
+    expect(shouldKillEncodeForContinueGuard(true)).toBe(false);
+  });
+
+  it("kills encode only when continue guard denies (cancelled/superseded)", () => {
+    expect(shouldKillEncodeForContinueGuard(false)).toBe(true);
   });
 });

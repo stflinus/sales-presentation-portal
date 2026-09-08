@@ -31,6 +31,7 @@ import {
   normalizeOutputFrameRate,
   parseFrameRateFraction,
   shouldActivateOptimizedPlayback,
+  shouldKillEncodeForContinueGuard,
   validateOptimizedOutput,
 } from "../lib/videoOptimize.pure";
 import { getPortalSettings } from "../lib/settings";
@@ -287,7 +288,7 @@ async function optimizeVideo(
   outputPath: string,
   probe: VideoProbeResult,
   onProgress?: (info: FfmpegProgressInfo) => Promise<void>,
-  shouldAbort?: () => Promise<boolean>,
+  shouldContinue?: () => Promise<boolean>,
 ): Promise<{ selectedFps: number; videoFilter: string; maxrateKbps: number }> {
   const ffmpeg = getFfmpegPath();
   const plan = buildOptimizeEncodePlan(probe);
@@ -370,17 +371,28 @@ async function optimizeVideo(
           /* ignore heartbeat errors mid-encode */
         }
       }
-      if (shouldAbort) {
+      if (shouldContinue) {
         try {
-          if (await shouldAbort()) {
+          const continueAllowed = await shouldContinue();
+          if (shouldKillEncodeForContinueGuard(continueAllowed)) {
             killProc("SIGTERM");
             setTimeout(() => killProc("SIGKILL"), 2000);
             finish(() =>
-              reject(new Error("Processing cancelled (generation superseded or cancelled).")),
+              reject(
+                Object.assign(
+                  new Error(
+                    "Processing cancelled (generation superseded or cancelled).",
+                  ),
+                  {
+                    failureCategory:
+                      VIDEO_PROCESSING_FAILURE_CATEGORY.PROCESSING_CANCELLED,
+                  },
+                ),
+              ),
             );
           }
         } catch {
-          /* ignore */
+          /* ignore guard read errors mid-encode */
         }
       }
     };

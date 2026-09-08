@@ -240,6 +240,18 @@ export function validateOptimizedOutput(input: {
   };
 }
 
+/**
+ * Encode-loop abort polarity.
+ * The continue guard returns true when the job should keep running.
+ * Abort only when that guard returns false (cancelled / superseded / deleted).
+ * VID-D534B5: shouldContinue was wired as shouldAbort and inverted this check.
+ */
+export function shouldKillEncodeForContinueGuard(
+  continueAllowed: boolean,
+): boolean {
+  return continueAllowed === false;
+}
+
 /** Activation gate: never flip playback paths when validation failed. */
 export function shouldActivateOptimizedPlayback(input: {
   validationOk: boolean;
