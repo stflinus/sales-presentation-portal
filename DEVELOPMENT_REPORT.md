@@ -1556,6 +1556,10 @@ After that job reaches Ready, **A. Refresh the existing invitation** (same link)
 - This invitation’s black screen  
 - Any other invites using `2cABIGuqvzBfCtzDFy1D` client path
 
+### Git
+- Feature commit: `b109bc6c84dfb8d7c590a8e72613227af7f5a1ab`
+- Origin synchronized (0 ahead / 0 behind)
+
 ### Remaining risks
 - Other library videos may still have Aug-24 1000fps optimized files  
 - After reprocess, confirm Admin Client-path plays before asking the client to refresh
