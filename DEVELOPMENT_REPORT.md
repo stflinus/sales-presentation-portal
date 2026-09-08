@@ -1460,3 +1460,102 @@ Part 11 did not invent the inverted wiring (present since the Cloud Run worker b
 ### Remaining risks
 - Dan still serves the old pathological optimized MP4 until a successful reprocess
 - First successful encode may take a long time (~22 min source WebM → 30 FPS H.264)
+
+---
+
+## Part 13 — September 8, 2026 production client black screen
+
+**Date:** September 8, 2026 (evening)  
+**Invitation (token not recorded):** invite `SpefFZwgNIZ09kHWrqNM` → session `RX8mxKRHHurM5Vuj3Gjp`  
+**Client contact:** dan Tucker (email redacted)
+
+### INVESTIGATED
+
+#### Invitation / session
+| Field | Value |
+|-------|--------|
+| Invite status | accepted |
+| Session status | legal_accepted |
+| Assigned video | **`2cABIGuqvzBfCtzDFy1D` (“Sales Presentation”)** — **not** Dan’s `PcMlyjYFumQfRURoy1dJ` |
+| Why this video | Company `serenity-1` `activeVideoId` = `2cABIGuqvzBfCtzDFy1D` |
+| Access policy | single_view (expires 2026-09-15) |
+| Rep | WBJWAxBnSTgWbLHr0qSBnbTVCmz2 (Administrator) |
+| Legal | NDA/Terms/Privacy accepted |
+| Viewing entitlement consumed | false |
+| Lease | none at failure time |
+| Device | bound via invitation (cookie path); session fields cleared of raw device ids in dump |
+
+#### Client activity (last successful stage)
+1. invitation_opened / device_authorized  
+2. legal_accepted  
+3. presentation_ready / start_presentation_clicked  
+4. **playback_authorized** (videoId `2cABIGuqvzBfCtzDFy1D`)  
+5. **media_error** (`MEDIA_ELEMENT_ERROR`) ~2.4s later  
+6. browser_closed  
+
+**No** `video_started` / buffering lifecycle. Last successful stage: **playback_authorized**. Player never reached playable media.
+
+#### Dan reprocess result (separate video)
+| Field | Value |
+|-------|--------|
+| Video | `PcMlyjYFumQfRURoy1dJ` Dan’s Presentation |
+| processing.status | **ready** |
+| generation | **7** |
+| completedAt | 2026-09-08T18:46:12.444Z |
+| playbackStoragePath | `videos/PcMlyjYFumQfRURoy1dJ/optimized.mp4` |
+| New object | size **54,744,005**; updated **2026-09-08T18:45:14.953Z** |
+| ffprobe | MP4 H.264 High 1080p yuv420p, AAC, **30/1 FPS**, **nb_frames=40468**, faststart, ~0.32 Mbps overall |
+
+Dan’s new asset is healthy. **This failing invitation does not use it.**
+
+#### Client asset actually served (`2cABIGuq…/optimized.mp4`)
+| Field | Value |
+|-------|--------|
+| Updated | **2026-08-24** (pre–Part 11) |
+| Size | 273,060,647 |
+| Container | MP4; Content-Type video/mp4 |
+| Video | H.264 High 1920×1080 yuv420p |
+| Audio | AAC 48k stereo |
+| avg/r_frame_rate | **1000/1** |
+| nb_frames | **624438** (~1000×625s) |
+| bit_rate | ~3.49 Mbps overall |
+| Fast Start | yes (moov early) |
+| HTTP Range | **206** Partial Content works (bytes 0–1 and mid-file) |
+
+**Old Dan pathological pattern is NOT on Dan’s path anymore; it IS still on Sales Presentation’s client path.**
+
+#### Admin Client-path vs invitation
+- Admin Preview (source WebM VP9) for Sales Presentation: expected to play (same as historical Admin behavior).  
+- Admin **Client path** / invitation both use `optimized.mp4` → **same defective 1000fps asset** → black screen / media error expected for both.  
+- Encode/delivery of that object is the primary suspect (not lease/device/legal).
+
+### ROOT CAUSE
+
+Company-default **Sales Presentation** still serves an **Aug 24 pathological optimized MP4** (1000 FPS / ~624k frames). Browser reaches `playback_authorized`, assigns src, then **MEDIA_ERROR** → black player. Dan’s successful Part 12 reprocess is irrelevant to this invite because the invite snapped `2cABIGuqvzBfCtzDFy1D`.
+
+### IMPLEMENTED LOCALLY
+- Richer safe `MEDIA_ERROR` metrics (mediaErrorCode, readyState, networkState, videoWidth/Height, duration, bufferedCount) — no URLs/tokens  
+- Regression test: Part 13 pathological Sales Presentation encode must fail `validateOptimizedOutput`
+
+### DEPLOYED
+- Hosting only (player media-error diagnostics), if/when this Part’s commit is deployed  
+- **No** Cloud Run reprocess; **no** asset replacement performed by the agent
+
+### MANUALLY VERIFIED IN PRODUCTION
+- Invite→video mapping, activity timeline, ffprobe of both assets, Range 206, Dan gen-7 healthy encode
+
+### MANUAL ACTION REQUIRED (ONE)
+
+**D is wrong video.** Do **not** reprocess Dan again.
+
+**Required:** Admin → Video Library → **Reprocess / Retry Processing** for **Sales Presentation** (`2cABIGuqvzBfCtzDFy1D`) — the company active video.
+
+After that job reaches Ready, **A. Refresh the existing invitation** (same link). Do not reset device; do not create a fresh invite unless refresh still fails after the new asset activates.
+
+### STILL UNRESOLVED until Sales Presentation reprocess
+- This invitation’s black screen  
+- Any other invites using `2cABIGuqvzBfCtzDFy1D` client path
+
+### Remaining risks
+- Other library videos may still have Aug-24 1000fps optimized files  
+- After reprocess, confirm Admin Client-path plays before asking the client to refresh

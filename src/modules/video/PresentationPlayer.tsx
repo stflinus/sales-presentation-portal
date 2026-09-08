@@ -419,6 +419,8 @@ export function PresentationPlayer({
 
     const onError = () => {
       setIsBuffering(false);
+      const mediaErr = video.error;
+      const mediaCode = mediaErr?.code ?? null;
       setError({
         message: "We're sorry, but there was a problem loading your presentation. Please contact your representative for assistance.",
         code: generateErrorId(),
@@ -428,7 +430,26 @@ export function PresentationPlayer({
         type: ACTIVITY_EVENT.MEDIA_ERROR,
         severity: ACTIVITY_SEVERITY.ERROR,
         description: "Media element reported a playback error.",
-        errorCode: "MEDIA_ELEMENT_ERROR",
+        errorCode:
+          mediaCode === 1
+            ? "MEDIA_ERR_ABORTED"
+            : mediaCode === 2
+              ? "MEDIA_ERR_NETWORK"
+              : mediaCode === 3
+                ? "MEDIA_ERR_DECODE"
+                : mediaCode === 4
+                  ? "MEDIA_ERR_SRC_NOT_SUPPORTED"
+                  : "MEDIA_ELEMENT_ERROR",
+        metrics: {
+          mediaErrorCode: mediaCode,
+          readyState: video.readyState,
+          networkState: video.networkState,
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight,
+          duration: Number.isFinite(video.duration) ? video.duration : 0,
+          currentTime: video.currentTime,
+          bufferedCount: video.buffered.length,
+        },
       });
       onPlaybackFailedRef.current?.();
     };
