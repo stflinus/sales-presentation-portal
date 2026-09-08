@@ -1292,7 +1292,9 @@ No dedicated Sept 8 implementation pass addressed buffering residual, NDA residu
 
 ### Git
 
-- Commit hash recorded after commit/push (see end of Part 10 / git log)
+- Commit: `9e69c522f54d2cd0b04ccc9664634a1ffb5090ed`
+- Branch synchronized with origin (0 ahead / 0 behind) after push
+- Working tree clean after commit
 
 ### Remaining risks
 
