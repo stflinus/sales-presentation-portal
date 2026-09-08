@@ -1381,6 +1381,6 @@ Dan video `PcMlyjYFumQfRURoy1dJ` source WebM reports `frameRate: 1000`. Prior op
 - Compatible videos with only metadata FPS >60 will now be re-encoded when queued (intentional)
 
 ### Git
-- Feature commit: `4a425b3c` (FPS normalize + validation + worker deploy docs)
-- Report hash commit follows; working tree synchronized with origin after push
+- Feature commit: `4a425b3` (optimizer FPS + validation; see `git rev-parse 4a425b3`)
+- HEAD after report fixes: `05f47ce971f37401cc0d35dedd58fb7c4bec03e6`
 - Origin synchronized (0 ahead / 0 behind) after push
