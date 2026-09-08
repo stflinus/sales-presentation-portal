@@ -1453,6 +1453,10 @@ Part 11 did not invent the inverted wiring (present since the Cloud Run worker b
 - shared / functions / frontend build — pass
 - `npm test` — **229** pass
 
+### Git
+- Feature commit: `5be335edc647010481569d5e71b0e669f1010c85`
+- Origin synchronized (0 ahead / 0 behind)
+
 ### Remaining risks
 - Dan still serves the old pathological optimized MP4 until a successful reprocess
 - First successful encode may take a long time (~22 min source WebM → 30 FPS H.264)
