@@ -881,6 +881,9 @@ export const getAdminVideoPreviewUrl = onCall(async (request) => {
   const { ctx, companyId: company } = await resolveCompany(request);
   const videoId = String(request.data?.videoId || "").trim();
   if (!videoId) throw new HttpsError("invalid-argument", "videoId required.");
+  const assetKindRaw = String(request.data?.assetKind || "source").trim();
+  const assetKind =
+    assetKindRaw === "clientPlayback" ? "clientPlayback" : "source";
   const snap = await db.collection("videos").doc(videoId).get();
   if (!snap.exists) throw new HttpsError("not-found", "Video not found.");
   const data = snap.data()!;
@@ -888,9 +891,21 @@ export const getAdminVideoPreviewUrl = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Video belongs to another company.");
   }
   assertNotDeleted(data);
-  const file = bucket.file(String(data.storagePath));
+
+  const sourcePath = String(data.storagePath || "");
+  const playbackPath =
+    String(data.playbackStoragePath || "") ||
+    String(data.optimizedStoragePath || "") ||
+    sourcePath;
+  const storagePath = assetKind === "clientPlayback" ? playbackPath : sourcePath;
+  if (!storagePath) {
+    throw new HttpsError("failed-precondition", "Video storage path missing.");
+  }
+
+  const file = bucket.file(storagePath);
   const [exists] = await file.exists();
   if (!exists) throw new HttpsError("failed-precondition", "Video file missing in Storage.");
+  const [meta] = await file.getMetadata().catch(() => [null]);
   const [url] = await file.getSignedUrl({
     action: "read",
     expires: Date.now() + 10 * 60 * 1000,
@@ -902,6 +917,12 @@ export const getAdminVideoPreviewUrl = onCall(async (request) => {
     title: data.title,
     versionNumber: data.versionNumber,
     status: data.status,
+    assetKind,
+    storagePath,
+    sizeBytes: meta?.size != null ? Number(meta.size) : null,
+    contentType: meta?.contentType || null,
+    sourceStoragePath: sourcePath || null,
+    clientPlaybackStoragePath: playbackPath || null,
   };
 });
 

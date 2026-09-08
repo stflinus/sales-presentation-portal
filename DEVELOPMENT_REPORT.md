@@ -1054,3 +1054,248 @@ Ongoing “buffer every ~10s” after the initial thrash may also involve bitrat
 ### Deploy note
 
 Deploy functions (`purgeInactivePresentations`, `runPresentationOperationalCleanupNow`, and callables that write the activity field). Hosting not required for this policy.
+
+---
+
+## Part 9 — September 8, 2026 real-user production test audit
+
+**Date of audit:** September 8, 2026  
+**Commit audited:** `ac23cda` (*Production baseline: playback stability, user management, cleanup lifecycle*)  
+**Branch:** `cursor/invitation-email-generator` (local ≡ origin, 0 ahead / 0 behind)  
+**Scope:** Status of three client-facing concerns reported after production use — **documentation only; no new feature work in this Part.**
+
+### Summary (exact)
+
+| Concern | Status on Sept 8 |
+|---------|------------------|
+| 1. Client invitation video buffering | **Partially addressed earlier (Part 7 src-thrash).** Proven lease/`src` remount bug was fixed and **deployed** Sept 4. Ongoing “buffer ~every 10s” was **never manually confirmed fixed** and remains **STILL UNRESOLVED / not fully verified**. |
+| 2. NDA showing Signature/Date lines | **Fixed earlier (Sept 4) and deployed to hosting.** Live bundle has **0** `Signature:` strings. **Not previously documented** in Parts 1–8 as its own section — recorded here. |
+| 3. Internal video title (“Dan’s Presentation”) shown to clients | **NOT investigated as a dedicated task. NOT implemented. NOT deployed.** Code still returns `video.title` from `grantVideoAccess` into `PresentationPlayer` heading. **STILL UNRESOLVED.** |
+
+**No new encode/transcode** was performed for these concerns. Cloud Run `spp-video-process` was not redeployed for this audit.
+
+**No feature commits after `ac23cda`.** Only this Part 9 documentation update is being written on Sept 8.
+
+---
+
+### 1. Buffering
+
+#### INVESTIGATED (Sept 4 — Part 7)
+- Compared Admin Preview vs Client playback paths.
+- Admin Preview signs **source** `storagePath` only (`getAdminVideoPreviewUrl`, 10 min TTL).
+- Client prefers `playbackStoragePath || optimizedStoragePath || storagePath` (Dan: optimized ~594 MB vs source ~378 MB).
+- Direct GCS signed URLs (no Function byte proxy); Range supported.
+- Production activity: Bill session **11×** `video_started` in ~5s → lease acquire race + `src` reassignment.
+
+#### IMPLEMENTED LOCALLY (Sept 4)
+- `PresentationPlayer.tsx` / `presentationPlayer.pure.ts` — do not apply lease `videoUrl` to `<video src>`; in-flight guard.
+- `ClientPresentationPage.tsx` — avoid nulling src on expiry recovery remount.
+- `functions/src/callables/video.ts` — `acquireViewingLease` stops reminting replacement URL; `VIDEO_STARTED` only when lease `created`.
+- Tests: `tests/unit/presentationPlayerSrcStability.test.ts`.
+
+#### DEPLOYED (Sept 4)
+- Hosting: production serving `assets/index-BPfGAjKB.js` (includes player fix; later same-day NDA UX also in this bundle).
+- Functions: `acquireViewingLease` live (current revision as of Sept 8 audit: `acquireviewinglease-00022-dat`, ACTIVE; updated during Part 8 callable redeploy train).
+
+#### MANUALLY VERIFIED IN PRODUCTION
+- **Not completed** for “smooth full-length playback / no ~10s buffering” on a fresh Sept 8 invite.
+- Part 7 explicitly required a fresh-invite soak test; agents were instructed **not** to claim buffering fully fixed until that test.
+
+#### STILL UNRESOLVED
+- Whether remaining buffering (if any) is bitrate/asset-related vs residual player issues.
+- No Network waterfall capture for Range 206 cadence on a failed client session after the src-thrash fix.
+
+---
+
+### 2. NDA Signature / Date display
+
+#### INVESTIGATED
+- Client NDA body is static React in `src/modules/legal/nda/NdaDocumentHtml.tsx` (not Firestore body for display).
+- Bottom blocks showed blank `Signature:` / `Date:` lines that clients mistook for wet-ink requirements.
+
+#### IMPLEMENTED LOCALLY (Sept 4)
+- Removed **only** client `Signature:` and `Date:` lines from both client sign blocks in `NdaDocumentHtml.tsx`.
+- Kept all NDA body wording, §8 acknowledgement text, `Client Name:` lines, Representative/Title block.
+- Did **not** change Terms/Privacy, acceptLegal, versioning, or audit evidence logic.
+- Note: `versions.ts` `NDA_V1_PLAIN_TEXT` still contains `Signature:`/`Date:` strings for plain-text twin / publish hashing — **display** path no longer shows them.
+
+#### DEPLOYED (Sept 4)
+- Hosting-only deploy to `presentationhub.web.app`.
+- Live verification (re-checked Sept 8): `Signature:` count in live JS = **0**; `Client Name:` = **2**.
+
+#### MANUALLY VERIFIED IN PRODUCTION
+- Bundle-level verification: signature lines absent from live JS.
+- Full human UI walkthrough on Sept 8 real-user session: **not recorded in this audit as completed by the agent**.
+
+#### STILL UNRESOLVED / residual
+- §8 still says “By signing below…” (wording intentionally unchanged per prior instruction).
+- Plain-text twin in `versions.ts` still lists Signature/Date (not shown in client HTML component).
+
+---
+
+### 3. Internal video title exposed to clients (“Dan’s Presentation”)
+
+#### INVESTIGATED (this audit only)
+- `grantVideoAccess` returns `title: video.title` (`functions/src/callables/video.ts`).
+- `ClientPresentationPage` does `setVideoTitle(data.title || "Presentation")` and passes it to `PresentationPlayer`.
+- `PresentationPlayer` renders `<h1 className="player-title">{title}</h1>`.
+- Therefore the Video Library internal title (e.g. “Dan’s Presentation”) **is** exposed on the client player UI.
+
+#### IMPLEMENTED LOCALLY
+- **None.** No title-sanitization or client-facing display name was added.
+
+#### DEPLOYED
+- **None** for this concern.
+
+#### MANUALLY VERIFIED IN PRODUCTION
+- Live JS does not hardcode the string “Dan’s Presentation” (title comes from API/Firestore at runtime). Exposure is dynamic via `video.title`.
+
+#### STILL UNRESOLVED
+- Need product decision + implementation: stop returning internal library titles to clients, or use a separate client-safe label.
+
+---
+
+### Related production state (Sept 8 audit snapshot)
+
+| Item | Value |
+|------|--------|
+| Git HEAD | `ac23cdaa9bb0500bb9eade79e6ec73fa468b8bc7` |
+| Origin sync | 0 ahead / 0 behind |
+| Working tree at start of audit | Clean (Part 9 doc edit may leave `DEVELOPMENT_REPORT.md` modified) |
+| Live hosting bundle | `assets/index-BPfGAjKB.js` |
+| `acquireViewingLease` | `acquireviewinglease-00022-dat` ACTIVE |
+| Video optimizer / re-encode for these issues | **Not performed** |
+| Part 8 cleanup | Deployed Sept 4; first destructive cleanup of 8 expired sessions already ran earlier; not part of this three-issue prompt |
+
+### What was NOT done after a hypothetical “fix all three now” Sept 8 prompt
+
+No dedicated Sept 8 implementation pass addressed buffering residual, NDA residual wording, or client title hiding. Prior work (Parts 7 + NDA UX on Sept 4) covers items 1–2 partially/fully as above; item 3 was never worked.
+
+---
+
+## Part 10 — September 8, 2026 implementation: title isolation, NDA v1.1.0, buffering evidence
+
+**Date:** September 8, 2026  
+**Branch:** `cursor/invitation-email-generator`
+
+### Summary
+
+| Concern | Outcome |
+|---------|---------|
+| Internal video title on client | **Fixed and deployed** — no longer returned or rendered |
+| NDA “sign below” wording | **Fixed, versioned as 1.1.0, published, deployed** |
+| Remaining client buffering | **Root cause identified (pathological optimized encode). No re-encode performed. STILL UNRESOLVED pending approval** |
+
+---
+
+### 1. Hide internal video title from clients
+
+#### IMPLEMENTED LOCALLY
+- `grantVideoAccess` no longer returns `title`.
+- `exchangeInviteToken` no longer returns `videoTitle`.
+- `ClientPresentationPage` no longer stores/passes a title.
+- `PresentationPlayer` renders `<h1 class="player-title">` only when `shouldRenderClientPlayerTitle` allows (always false for client).
+- Staff paths unchanged: Video Library, Users assignment, `getAdminVideoPreviewUrl.title`, `presentationPolicy.videoTitle`.
+- Pure helpers: `src/modules/video/clientVideoTitle.pure.ts`.
+
+#### DEPLOYED
+- Hosting bundle `assets/index-CRpmUqG5.js`
+- Functions: `grantVideoAccess` → `grantvideoaccess-00022-zoz`; `exchangeInviteToken` → `exchangeinvitetoken-00023-faz`
+
+#### MANUALLY VERIFIED IN PRODUCTION
+- Live JS: `Dan's Presentation` count = **0**
+- Live JS: `electronically accepting` present; no client title hardcoding
+
+#### STILL UNRESOLVED
+- Full fresh-invite UI walkthrough confirming player chrome has no title heading (manual)
+
+---
+
+### 2. NDA electronic-acceptance wording (v1.1.0)
+
+#### IMPLEMENTED LOCALLY
+- `NdaDocumentHtml.tsx` §8 → electronic acceptance language (no Signature/Date fields added).
+- `versions.ts`: archived `1.0.0`; activated `1.1.0` with new PDF under `public/legal/nda/v1.1.0/`.
+- `NDA_V1_1_PLAIN_TEXT` twin aligned with §8; historical `NDA_V1_PLAIN_TEXT` preserved.
+- PDF sha256: `cacb25ccf225aa070bfd88ad920685965053c4ccdcf1c3da08df8194cabe345a`
+- Body contentSha256: `ef65ad513d436f6b77126755b17810596670cfa6e5b2cc803c5d7432c8c0da8c`
+- Publish script: `scripts/publish-nda-v1.1.mjs`
+
+#### DEPLOYED
+- Hosting (HTML + PDF)
+- Firestore publish for company `serenity-1` + portal settings: legalDocuments id **`jGbttEjydL6v6nxZ5JgC`**, versionLabel **1.1.0**, status active
+
+#### MANUALLY VERIFIED IN PRODUCTION
+- Live JS: `signing below` = **0**; `Signature:` = **0**; `electronically accepting` = **1**; version `1.1.0` present
+- PDF URL HTTP 200
+- Active Firestore body matches electronic wording; no `Signature:` lines
+
+#### STILL UNRESOLVED
+- Human checkbox acceptance on a brand-new invite (acceptance architecture unchanged; wording verified)
+
+---
+
+### 3. Buffering diagnosis (Dan video `PcMlyjYFumQfRURoy1dJ`)
+
+#### INVESTIGATED (production evidence)
+| Asset | Path | Size | Format | Notes |
+|-------|------|------|--------|-------|
+| Admin Preview (source) | `videos/PcMlyjYFumQfRURoy1dJ/source.mp4` | **377,853,887** (~361 MB) | **WebM / VP9 / Opus** (misnamed `.mp4`) | ~2.24 Mbps avg if same duration; no MP4 faststart |
+| Client playback | `…/optimized.mp4` (= playbackStoragePath) | **593,662,335** (~566 MB) | **MP4 / H.264 High 1080p / AAC** | faststart (**moov at byte 32**); avg **~3.52 Mbps** |
+| Duration | — | — | — | **~1349.65 s** (~22.5 min) |
+| Optimized frame count | — | — | — | **`nb_frames=1,348,996`**, `avg_frame_rate=1000/1` → **~1000 fps** |
+| Source probe in Firestore | `processing.probeResult.frameRate` | — | — | Already recorded **`frameRate: 1000`** (WebM timestamp artifact) |
+
+**Root cause (application delivery + encode):** Client is forced onto an “optimized” MP4 that is **larger** than source and was encoded from a **pathological 1000 fps** probe without FPS clamping. That produces an over-framed ~3.5 Mbps progressive file that will exhaust browser buffer on typical client links. Admin Preview “works” because it plays the **smaller WebM source**, not the client asset. Part 7 src-thrash was a separate bug (already fixed); remaining stalls are asset/encode related.
+
+**Not performed:** Cloud Run optimizer redeploy; production re-encode (~2h).
+
+#### IMPLEMENTED LOCALLY (diagnostics / staff tools only)
+- `PresentationPlayer`: safe `BUFFERING_STARTED` / `BUFFERING_ENDED` metrics (currentTime, bufferAhead, readyState, networkState, waitedMs — **no URLs/tokens/cookies**); `preload="auto"`.
+- `logClientActivity` allows those types + `MEDIA_ERROR`; sanitizes metrics.
+- Staff-only `getAdminVideoPreviewUrl({ assetKind: "clientPlayback" })` + Video Library **Client path** button (same playback path clients get).
+- Pure evidence helpers: `playbackAsset.pure.ts`.
+
+#### DEPLOYED
+- Hosting + `getAdminVideoPreviewUrl` (`getadminvideopreviewurl-00014-sam`) + `logClientActivity` (`logclientactivity-00010-dad`)
+
+#### MANUALLY VERIFIED IN PRODUCTION
+- Asset sizes/codecs/frame-rate evidence gathered from GCS + ffprobe (above)
+- **Smooth full-length client playback after this deploy: NOT claimed**
+
+#### STILL UNRESOLVED — buffering
+- **MANUAL VERIFICATION REQUIRED** on a fresh production invitation after an approved re-encode
+- Recommended encode changes (awaiting approval; do **not** start until approved):
+  1. Clamp FPS: e.g. `-vf "fps=30,scale=-2:'min(1080,ih)'"` (or `fps=24`) when probe `frameRate > 60`
+  2. Reject/flag probe `frameRate > 120` before accepting optimized output
+  3. Verify output `nb_frames ≈ duration × fps` (expect ~30k–40k for 22 min @30fps, **not** 1.35M)
+  4. Target lower streaming bitrate (e.g. 1500–2500 kbps video) vs current `targetVideoBitrateKbps: 3500`
+  5. Keep `+faststart`; confirm moov-at-front post-encode
+  6. Re-run optimization for `PcMlyjYFumQfRURoy1dJ` only after (1)–(5) land in the job image
+  7. Do **not** point all clients at WebM source as a global fix (Safari VP9/WebM risk)
+
+---
+
+### Tests / build
+
+- `npm run build:shared` — pass
+- `npm run build:functions` — pass
+- `npm run build` — pass (`index-CRpmUqG5.js`)
+- `npm test` — **206** unit tests pass (added `clientVideoTitle`, `ndaVersioning`, `playbackAsset`)
+
+### Files changed (this Part)
+
+- Client title: `video.ts`, `exchangeInvite.ts`, `ClientPresentationPage.tsx`, `PresentationPlayer.tsx`, `clientVideoTitle.pure.ts`, `clientVideoTitle.test.ts`
+- NDA: `NdaDocumentHtml.tsx`, `versions.ts`, `public/legal/nda/v1.1.0/…`, `publish-nda-v1.1.mjs`, `ndaVersioning.test.ts`
+- Buffering diagnostics: `PresentationPlayer.tsx`, `clientActivity.ts`, `managePresentationActivity.ts`, `manageVideos.ts`, `VideoLibraryPage.tsx`, `playbackAsset.pure.ts`, `playbackAsset.test.ts`
+- `DEVELOPMENT_REPORT.md` (this Part)
+
+### Git
+
+- Commit hash recorded after commit/push (see end of Part 10 / git log)
+
+### Remaining risks
+
+- Clients continue to stream the pathological optimized MP4 until a re-encode is approved and completed
+- NDA PDF v1.1.0 is a generated text twin of the plain-text body (not a redesign of the original counsel PDF layout)
+- Buffering event volume may increase activity-log noise until throttled further if needed

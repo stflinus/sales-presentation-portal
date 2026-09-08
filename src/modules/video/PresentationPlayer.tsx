@@ -19,11 +19,13 @@ import {
   shouldApplyLeaseVideoUrl,
   shouldStartLeaseAcquire,
 } from "./presentationPlayer.pure";
+import { shouldRenderClientPlayerTitle } from "./clientVideoTitle.pure";
 import "./presentationPlayer.css";
 
 interface Props {
   sessionId: string;
   src: string;
+  /** Optional; client players must omit internal Video Library titles. */
   title?: string;
   expiresAt?: string;
   slideMarkers?: SlideMarker[] | null;
@@ -65,7 +67,7 @@ function mapPlayerError(err: unknown): string {
 export function PresentationPlayer({
   sessionId,
   src,
-  title = "Presentation",
+  title,
   expiresAt,
   slideMarkers,
   onUrlRefresh,
@@ -75,6 +77,8 @@ export function PresentationPlayer({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const bufferingStartedAtRef = useRef<number | null>(null);
+  const lastBufferLogAtRef = useRef(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -334,8 +338,60 @@ export function PresentationPlayer({
       }
     };
 
-    const onWaiting = () => setIsBuffering(true);
-    const onPlaying = () => setIsBuffering(false);
+    const collectSafeBufferMetrics = () => {
+      const bufferedEnd =
+        video.buffered.length > 0
+          ? video.buffered.end(video.buffered.length - 1)
+          : 0;
+      return {
+        currentTime: video.currentTime,
+        bufferedEnd,
+        bufferAhead: Math.max(0, bufferedEnd - video.currentTime),
+        duration: Number.isFinite(video.duration) ? video.duration : 0,
+        readyState: video.readyState,
+        networkState: video.networkState,
+        paused: video.paused,
+      };
+    };
+
+    const onWaiting = () => {
+      setIsBuffering(true);
+      const now = Date.now();
+      // Throttle duplicate waiting storms (min 2s between started logs).
+      if (now - lastBufferLogAtRef.current < 2000 && bufferingStartedAtRef.current) {
+        return;
+      }
+      bufferingStartedAtRef.current = now;
+      lastBufferLogAtRef.current = now;
+      void logClientActivity({
+        sessionId,
+        type: ACTIVITY_EVENT.BUFFERING_STARTED,
+        severity: ACTIVITY_SEVERITY.WARNING,
+        description: "Player entered a buffering wait state.",
+        errorCode: "BUFFERING_STARTED",
+        metrics: collectSafeBufferMetrics(),
+      });
+    };
+
+    const onPlaying = () => {
+      setIsBuffering(false);
+      if (bufferingStartedAtRef.current) {
+        const waitedMs = Date.now() - bufferingStartedAtRef.current;
+        bufferingStartedAtRef.current = null;
+        void logClientActivity({
+          sessionId,
+          type: ACTIVITY_EVENT.BUFFERING_ENDED,
+          severity: ACTIVITY_SEVERITY.INFO,
+          description: "Player exited buffering wait state.",
+          errorCode: "BUFFERING_ENDED",
+          metrics: {
+            ...collectSafeBufferMetrics(),
+            waitedMs,
+          },
+        });
+      }
+    };
+
     const onCanPlay = () => setIsBuffering(false);
 
     const onVolumeChange = () => {
@@ -547,11 +603,13 @@ export function PresentationPlayer({
       onMouseMove={showControls}
       onTouchStart={showControls}
     >
-      <h1 className="player-title">{title}</h1>
+      {shouldRenderClientPlayerTitle(title) ? (
+        <h1 className="player-title">{title}</h1>
+      ) : null}
       <video
         ref={videoRef}
         src={src}
-        preload="metadata"
+        preload="auto"
         playsInline
         onClick={togglePlay}
       />

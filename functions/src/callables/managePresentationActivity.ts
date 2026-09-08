@@ -26,7 +26,10 @@ const CLIENT_ALLOWED_TYPES = new Set<string>([
   ACTIVITY_EVENT.PRESENTATION_READY,
   ACTIVITY_EVENT.START_PRESENTATION_CLICKED,
   ACTIVITY_EVENT.VIDEO_BUFFERING,
+  ACTIVITY_EVENT.BUFFERING_STARTED,
+  ACTIVITY_EVENT.BUFFERING_ENDED,
   ACTIVITY_EVENT.PLAYBACK_ERROR,
+  ACTIVITY_EVENT.MEDIA_ERROR,
   ACTIVITY_EVENT.BROWSER_CLOSED,
   ACTIVITY_EVENT.NETWORK_FAILURE,
   ACTIVITY_EVENT.NETWORK_RETRY,
@@ -34,6 +37,36 @@ const CLIENT_ALLOWED_TYPES = new Set<string>([
   ACTIVITY_EVENT.DEVICE_CAPTURED,
   ACTIVITY_EVENT.PROGRESS_UPDATE,
 ]);
+
+function sanitizeClientMetrics(
+  raw: unknown,
+): Record<string, number | string | boolean | null> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, number | string | boolean | null> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const k = String(key).slice(0, 40);
+    if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(k)) continue;
+    if (value == null) {
+      out[k] = null;
+      continue;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[k] = Math.round(value * 1000) / 1000;
+      continue;
+    }
+    if (typeof value === "boolean") {
+      out[k] = value;
+      continue;
+    }
+    if (typeof value === "string") {
+      const s = value.slice(0, 64);
+      // Reject anything that looks like a URL or token material.
+      if (/https?:|storage\.googleapis|token|cookie|bearer/i.test(s)) continue;
+      out[k] = s;
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 const FRIENDLY_STAFF =
   "We're sorry, but there was a problem loading this presentation. Please contact an administrator for assistance.";
@@ -83,10 +116,14 @@ export const logClientActivity = onCall(async (request) => {
           type === ACTIVITY_EVENT.TIMEOUT
         ? ACTIVITY_SEVERITY.ERROR
         : type === ACTIVITY_EVENT.VIDEO_BUFFERING ||
+            type === ACTIVITY_EVENT.BUFFERING_STARTED ||
+            type === ACTIVITY_EVENT.BUFFERING_ENDED ||
             type === ACTIVITY_EVENT.BROWSER_CLOSED ||
             type === ACTIVITY_EVENT.NETWORK_RETRY
           ? ACTIVITY_SEVERITY.WARNING
           : ACTIVITY_SEVERITY.INFO;
+
+  const metrics = sanitizeClientMetrics(request.data?.metrics);
 
   await writePresentationActivity({
     sessionId,
@@ -112,7 +149,10 @@ export const logClientActivity = onCall(async (request) => {
         ? String(request.data.networkStatus).slice(0, 64)
         : null,
     cloudFunction: "logClientActivity",
-    payload: { clientReported: true },
+    payload: {
+      clientReported: true,
+      ...(metrics ? { metrics } : {}),
+    },
   });
 
   const nowIso = new Date().toISOString();

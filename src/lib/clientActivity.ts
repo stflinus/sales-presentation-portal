@@ -10,6 +10,7 @@ import { functions } from "@/lib/firebase";
 /**
  * Best-effort client activity logging. Never throws to callers.
  * Descriptions must stay friendly — server strips stacks / INTERNAL.
+ * Optional metrics must never include URLs, tokens, cookies, or secrets.
  */
 export async function logClientActivity(input: {
   sessionId: string;
@@ -17,6 +18,7 @@ export async function logClientActivity(input: {
   description: string;
   severity?: ActivitySeverity;
   errorCode?: string;
+  metrics?: Record<string, number | string | boolean | null>;
 }): Promise<void> {
   if (!input.sessionId) return;
   try {
@@ -27,6 +29,7 @@ export async function logClientActivity(input: {
       description: input.description.slice(0, 400),
       severity: input.severity || ACTIVITY_SEVERITY.INFO,
       errorCode: input.errorCode || null,
+      metrics: input.metrics || null,
     });
   } catch {
     // non-fatal — never block the client flow

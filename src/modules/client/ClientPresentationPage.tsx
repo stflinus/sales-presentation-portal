@@ -40,7 +40,6 @@ export function ClientPresentationPage() {
   const [started, setStarted] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [videoTitle, setVideoTitle] = useState("Presentation");
   const [videoExpiresAt, setVideoExpiresAt] = useState<string | null>(null);
   const [slideMarkers, setSlideMarkers] = useState<SlideMarker[] | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
@@ -244,12 +243,10 @@ export function ClientPresentationPage() {
       });
       const data = result.data as {
         videoUrl: string;
-        title: string;
         expiresAt?: string;
         slideMarkers?: SlideMarker[];
       };
       setVideoUrl(data.videoUrl);
-      setVideoTitle(data.title || "Presentation");
       setVideoExpiresAt(data.expiresAt || null);
       setSlideMarkers(data.slideMarkers || null);
       setPreparing(false);
@@ -446,7 +443,6 @@ export function ClientPresentationPage() {
           <PresentationPlayer
             sessionId={sessionId}
             src={videoUrl}
-            title={videoTitle}
             expiresAt={videoExpiresAt || undefined}
             slideMarkers={slideMarkers}
             onUrlRefresh={(url) => setVideoUrl(url)}

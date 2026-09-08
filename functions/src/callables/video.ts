@@ -238,12 +238,12 @@ export const grantVideoAccess = onCall(async (request) => {
     )
     .catch(() => undefined);
 
+  // Never return the internal Video Library title to clients.
   return {
     videoUrl: url,
     expiresAt,
     expiresInSeconds,
     invitationExpiresAt: session.expiresAt || null,
-    title: video.title,
     durationSeconds: video.durationSeconds ?? null,
     videoId,
     slideMarkers,

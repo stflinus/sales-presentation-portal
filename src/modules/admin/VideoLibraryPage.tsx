@@ -278,6 +278,7 @@ export function VideoLibraryPage() {
   const [title, setTitle] = useState("Sales Presentation");
   const [description, setDescription] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLabel, setPreviewLabel] = useState<string>("Preview");
   const [renamingVideo, setRenamingVideo] = useState<VideoRow | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [renameDescription, setRenameDescription] = useState("");
@@ -795,14 +796,31 @@ export function VideoLibraryPage() {
     }
   }
 
-  async function preview(videoId: string) {
+  async function preview(
+    videoId: string,
+    assetKind: "source" | "clientPlayback" = "source",
+  ) {
     setBusyId(videoId);
     setError(null);
     try {
       const callable = httpsCallable(functions, "getAdminVideoPreviewUrl");
-      const result = await callable({ videoId });
-      const data = result.data as { videoUrl: string };
+      const result = await callable({ videoId, assetKind });
+      const data = result.data as {
+        videoUrl: string;
+        assetKind?: string;
+        storagePath?: string;
+        sizeBytes?: number | null;
+      };
       setPreviewUrl(data.videoUrl);
+      const sizeLabel =
+        typeof data.sizeBytes === "number"
+          ? ` · ${(data.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+          : "";
+      setPreviewLabel(
+        assetKind === "clientPlayback"
+          ? `Client playback asset${sizeLabel}`
+          : `Source preview${sizeLabel}`,
+      );
     } catch (err) {
       setError(mapUploadError(err));
     } finally {
@@ -1183,9 +1201,18 @@ export function VideoLibraryPage() {
                                 type="button"
                                 className="ghost"
                                 disabled={busyId === v.id || stuck}
-                                onClick={() => void preview(v.id)}
+                                onClick={() => void preview(v.id, "source")}
                               >
                                 Preview
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost"
+                                disabled={busyId === v.id || stuck}
+                                title="Staff-only: same playbackStoragePath / optimized asset clients receive"
+                                onClick={() => void preview(v.id, "clientPlayback")}
+                              >
+                                Client path
                               </button>
                               {v.status !== VIDEO_STATUS.ACTIVE ? (
                                 <button
@@ -1277,9 +1304,17 @@ export function VideoLibraryPage() {
                                 type="button"
                                 className="ghost"
                                 disabled={busyId === v.id}
-                                onClick={() => void preview(v.id)}
+                                onClick={() => void preview(v.id, "source")}
                               >
                                 Preview
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost"
+                                disabled={busyId === v.id}
+                                onClick={() => void preview(v.id, "clientPlayback")}
+                              >
+                                Client path
                               </button>
                             </>
                           ) : null}
@@ -1343,7 +1378,7 @@ export function VideoLibraryPage() {
 
       {previewUrl ? (
         <section className="panel">
-          <h2>Preview</h2>
+          <h2>{previewLabel}</h2>
           <video className="video-preview" src={previewUrl} controls playsInline />
           <button type="button" className="ghost" onClick={() => setPreviewUrl(null)}>
             Close preview

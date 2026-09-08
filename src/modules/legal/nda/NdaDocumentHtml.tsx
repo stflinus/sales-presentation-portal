@@ -1,6 +1,6 @@
 /**
- * Responsive HTML rendering of NDA v1.0.0.
- * Legal wording matches the uploaded PDF; only presentation markup differs.
+ * Responsive HTML rendering of the active NDA version.
+ * Legal wording must stay aligned with versions.ts plain-text twin + PDF.
  */
 export function NdaDocumentHtml() {
   return (
@@ -220,9 +220,8 @@ export function NdaDocumentHtml() {
       >
         <h3 id="h-acknowledgement">8. Client Acknowledgement</h3>
         <p>
-          By signing below, the Client acknowledges that they have read,
-          understand, and agree to be bound by the terms of this Non-Disclosure
-          and Liability Waiver Agreement in its entirety.
+          By electronically accepting this Agreement below, Client acknowledges
+          that Client has read, understands, and agrees to be bound by its terms.
         </p>
       </section>
 

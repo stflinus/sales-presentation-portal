@@ -365,7 +365,6 @@ export const exchangeInviteToken = onCall(async (request) => {
   });
 
   let companyName = String(session.companyName || "").trim();
-  let videoTitle = "Presentation";
   let estimatedDurationLabel = "Approximately 10–15 minutes";
   let legalDocuments: Array<{
     type: string;
@@ -392,8 +391,7 @@ export const exchangeInviteToken = onCall(async (request) => {
       const videoSnap = await db.collection("videos").doc(videoId).get();
       if (videoSnap.exists) {
         const video = videoSnap.data()!;
-        videoTitle =
-          String(video.title || "Presentation").trim() || "Presentation";
+        // Do not expose video.title (internal library name) to the client invite exchange.
         const durationSeconds =
           typeof video.durationSeconds === "number"
             ? video.durationSeconds
@@ -472,7 +470,6 @@ export const exchangeInviteToken = onCall(async (request) => {
     clientName: session.clientName,
     companyName,
     representativeName: session.representativeName,
-    videoTitle,
     estimatedDurationLabel,
     legalDocuments,
     alreadyViewed: false,
