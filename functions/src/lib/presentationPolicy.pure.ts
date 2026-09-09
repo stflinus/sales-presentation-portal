@@ -131,3 +131,80 @@ export function genericAccessUnavailableMessage(): string {
 
 export const REP_PRESENTATION_CONFIG_ERROR =
   "Your presentation configuration requires administrator attention. Please contact your administrator.";
+
+/**
+ * Server-side video selection for NEW invitations.
+ * Explicit rep assignment always wins; company default is fallback only when unset.
+ */
+export function resolveInviteVideoSelection(input: {
+  assignedVideoId?: string | null;
+  companyActiveVideoId?: string | null;
+}): {
+  source: "rep_assignment" | "company_fallback" | "none";
+  videoId: string | null;
+} {
+  const assigned = String(input.assignedVideoId || "").trim();
+  if (assigned) {
+    return { source: "rep_assignment", videoId: assigned };
+  }
+  const company = String(input.companyActiveVideoId || "").trim();
+  if (company) {
+    return { source: "company_fallback", videoId: company };
+  }
+  return { source: "none", videoId: null };
+}
+
+/**
+ * Historical invite/session videoId never follows later assignment or company changes.
+ */
+export function snapshottedInviteVideoId(input: {
+  inviteVideoId: string;
+  laterRepAssignedVideoId?: string | null;
+  laterCompanyActiveVideoId?: string | null;
+}): string {
+  return String(input.inviteVideoId || "").trim();
+}
+
+/** createInvite must ignore any client-submitted videoId. */
+export function ignoreClientSubmittedVideoId(
+  _clientVideoId: string | null | undefined,
+): undefined {
+  return undefined;
+}
+
+/**
+ * Presentation assignment and access policy are independent settings.
+ * Changing one must not force the other to a different value when merging patches.
+ */
+export function mergePresentationSettingsPatch(input: {
+  previous: {
+    activeVideoId?: string | null;
+    accessPolicy?: string | null;
+    accessDurationDays?: number | null;
+  } | null;
+  patch: {
+    activeVideoId?: string | null;
+    accessPolicy?: string | null;
+    accessDurationDays?: number | null;
+  };
+}): {
+  activeVideoId: string | null | undefined;
+  accessPolicy: string | null | undefined;
+  accessDurationDays: number | null | undefined;
+} {
+  const prev = input.previous || {};
+  return {
+    activeVideoId:
+      input.patch.activeVideoId !== undefined
+        ? input.patch.activeVideoId
+        : prev.activeVideoId,
+    accessPolicy:
+      input.patch.accessPolicy !== undefined
+        ? input.patch.accessPolicy
+        : prev.accessPolicy,
+    accessDurationDays:
+      input.patch.accessDurationDays !== undefined
+        ? input.patch.accessDurationDays
+        : prev.accessDurationDays,
+  };
+}

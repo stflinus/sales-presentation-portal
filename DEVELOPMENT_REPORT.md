@@ -1563,3 +1563,83 @@ After that job reaches Ready, **A. Refresh the existing invitation** (same link)
 ### Remaining risks
 - Other library videos may still have Aug-24 1000fps optimized files  
 - After reprocess, confirm Admin Client-path plays before asking the client to refresh
+
+---
+
+## Part 14 — September 8, 2026 rep presentation → invitation mapping
+
+**Date:** September 8, 2026
+
+### INVESTIGATED
+
+#### Who created Part 13 invite `SpefFZwgNIZ09kHWrqNM`?
+| Field | Value |
+|-------|--------|
+| createdBy / actorUid | `WBJWAxBnSTgWbLHr0qSBnbTVCmz2` |
+| Account | **Administrator** (`dovekai9@gmail.com`), displayName Administrator |
+| primaryRole | platform admin (companyId null on profile) |
+| presentationSettings | **null** |
+| Session representativeName | Administrator |
+| Created at | 2026-09-08T23:33:43.613Z |
+
+**Not created while logged in as Dan.**
+
+#### Dan Tucker production assignment
+| Field | Value |
+|-------|--------|
+| UID | `cYgXPEzNMuYYAYl2Qez6tHAkJfj2` |
+| displayName | Dan Tucker |
+| companyId | serenity-1 |
+| status | active |
+| presentationSettings.activeVideoId | **`PcMlyjYFumQfRURoy1dJ`** (Dan’s Presentation) |
+| accessPolicy | time_limited |
+| accessDurationDays | 7 |
+
+Assignment **is saved correctly**. No silent overwrite detected on Dan’s profile.
+
+#### Existing video-selection precedence (before this Part)
+1. `users.presentationSettings.activeVideoId` if non-empty → validate & use  
+2. Else `getActiveVideoForCompany(companyId)` (company `activeVideoId`, then any active company video)  
+3. Client **cannot** pass `videoId` on `createInvite` (ignored by design)
+
+Company `activeVideoId` = `2cABIGuqvzBfCtzDFy1D` does **not** override an explicit rep assignment.
+
+### ROOT CAUSE
+
+**CONFIGURATION / TEST-ACCOUNT ISSUE**, not a broken Dan→invite mapping.
+
+Part 13 invitation was created by the **Administrator** account (no `presentationSettings`) acting for company serenity-1 → intentional **company fallback** selected Sales Presentation. Dan’s user already pointed at Dan’s Presentation; he simply did not create that invite.
+
+Secondary sharp edge (real UI bug, not the Part 13 invite cause): Admin Users edit form **prefilled company default into the assignment select** and could persist it as an explicit assignment on any Save — fixed in this Part so future Saves don’t convert fallback → personal assignment silently.
+
+### IMPLEMENTED LOCALLY
+- `resolveInviteVideoSelection` / snapshot / merge helpers + tests (Dan/Mike/Sales isolation, immutability, client ignore, policy independence)
+- `resolveInvitationPolicy` uses explicit-assignment-first helper (same precedence)
+- UsersPage: Company default option; only write presentation fields when dirty; no company-default prefill lock-in
+
+### DEPLOYED
+- Hosting (Users UI)
+- `createInvite` (policy helper wiring; behavior unchanged)
+
+### MANUALLY VERIFIED IN PRODUCTION
+- Invite creator + Dan assignment Firestore evidence (above)
+- Historical invite `SpefFZwgNIZ09kHWrqNM` **left unchanged** (snapshot remains Sales Presentation)
+
+### CONFIGURATION/DATA ISSUE
+- No Dan profile correction required
+- No company `activeVideoId` change required for mapping correctness
+- Part 13 invite remains historical evidence of an admin-created invite
+
+### MANUAL TEST REQUIRED (ONE)
+
+**Log in as Dan Tucker** → Create Invitation for a test contact → confirm the new invite/session `videoId` is **`PcMlyjYFumQfRURoy1dJ`**.
+
+### STILL UNRESOLVED
+- Sales Presentation pathological optimized playback (Part 13) — separate from mapping; still needs its own reprocess when ready
+
+### Future Dan-created invitations
+Will receive **`PcMlyjYFumQfRURoy1dJ`** given current profile assignment.
+
+### Remaining risks
+- Platform admins with null presentationSettings still use company default when creating invites (by design)
+- Other reps without explicit assignment inherit company default

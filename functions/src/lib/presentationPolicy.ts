@@ -13,7 +13,10 @@ import {
 } from "../shared";
 import { db } from "./firebase";
 import { getActiveVideoForCompany, getCompany } from "./settings";
-import { computeInvitationExpiresAtIso } from "./presentationPolicy.pure";
+import {
+  computeInvitationExpiresAtIso,
+  resolveInviteVideoSelection,
+} from "./presentationPolicy.pure";
 
 export {
   capSignedUrlExpiresAtMs,
@@ -21,12 +24,16 @@ export {
   deviceResetMustNotTouch,
   DEVICE_RESET_SAFE_FIELD_PREFIXES,
   genericAccessUnavailableMessage,
+  ignoreClientSubmittedVideoId,
+  mergePresentationSettingsPatch,
   REP_PRESENTATION_CONFIG_ERROR,
+  resolveInviteVideoSelection,
   sessionAccessPolicy,
   sessionIsExpired,
   sessionSingleViewBlocked,
   sessionViewingEntitlementConsumed,
   shouldConsumeViewingEntitlementOnCompletion,
+  snapshottedInviteVideoId,
 } from "./presentationPolicy.pure";
 
 export function readUserPresentationSettings(
@@ -93,9 +100,14 @@ export async function resolveInvitationPolicy(input: {
           settings?.accessDurationDays ?? DEFAULT_ACCESS_DURATION_DAYS,
         );
 
-  let videoId = String(settings?.activeVideoId || "").trim();
+  let videoId = "";
   let videoTitle = "Presentation";
-  if (videoId) {
+  const selection = resolveInviteVideoSelection({
+    assignedVideoId: settings?.activeVideoId,
+    companyActiveVideoId: null, // company fallback resolved via getActiveVideoForCompany below
+  });
+  if (selection.source === "rep_assignment" && selection.videoId) {
+    videoId = selection.videoId;
     const video = await loadSelectableVideo(videoId, input.companyId);
     videoTitle = String((video as Record<string, unknown>).title || videoTitle);
   } else {

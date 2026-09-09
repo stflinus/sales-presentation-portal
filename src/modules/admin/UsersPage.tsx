@@ -131,6 +131,10 @@ export function UsersPage() {
   const [editRole, setEditRole] = useState<RoleId>(ROLE_IDS.REPRESENTATIVE);
   const [editStatus, setEditStatus] = useState<"active" | "inactive">("active");
   const [activeVideoId, setActiveVideoId] = useState("");
+  const [companyDefaultVideoId, setCompanyDefaultVideoId] = useState<string | null>(
+    null,
+  );
+  const [presentationDirty, setPresentationDirty] = useState(false);
   const [accessPolicy, setAccessPolicy] = useState<AccessPolicy>(
     ACCESS_POLICY.SINGLE_VIEW,
   );
@@ -214,6 +218,8 @@ export function UsersPage() {
     setEditStatus(u.status === "active" ? "active" : "inactive");
     setSettingsVideos([]);
     setActiveVideoId("");
+    setCompanyDefaultVideoId(null);
+    setPresentationDirty(false);
     setAccessPolicy(ACCESS_POLICY.SINGLE_VIEW);
     setAccessDurationDays(7);
     setError(null);
@@ -230,11 +236,14 @@ export function UsersPage() {
         };
         setSettingsVideos(data.videos || []);
         const ps = data.presentationSettings;
-        setActiveVideoId(
-          String(ps?.activeVideoId || data.companyActiveVideoId || ""),
-        );
+        const explicitVideoId = String(ps?.activeVideoId || "").trim();
+        setCompanyDefaultVideoId(data.companyActiveVideoId || null);
+        // Do NOT prefill company default into the assignment field — that would
+        // convert fallback into an explicit personal assignment on Save.
+        setActiveVideoId(explicitVideoId);
         setAccessPolicy(simplifyAccessPolicyForAdmin(ps?.accessPolicy));
         setAccessDurationDays(ps?.accessDurationDays ?? 7);
+        setPresentationDirty(false);
       } catch (err) {
         setError(callableErrorMessage(err, "Unable to load presentation settings."));
       } finally {
@@ -246,6 +255,8 @@ export function UsersPage() {
   function closeEditUser() {
     setEditingUser(null);
     setSettingsVideos([]);
+    setCompanyDefaultVideoId(null);
+    setPresentationDirty(false);
   }
 
   async function saveEditUser(e: FormEvent) {
@@ -272,9 +283,10 @@ export function UsersPage() {
       if (
         canManagePresentationPolicies &&
         isPresentationAssignable(editingUser) &&
-        activeVideoId
+        presentationDirty
       ) {
-        payload.activeVideoId = activeVideoId;
+        // Empty string clears explicit assignment → company fallback for future invites.
+        payload.activeVideoId = activeVideoId.trim() || null;
         payload.accessPolicy = accessPolicy;
         payload.accessDurationDays =
           accessPolicy === ACCESS_POLICY.SINGLE_VIEW ? null : accessDurationDays;
@@ -762,11 +774,19 @@ export function UsersPage() {
                       Assigned Presentation
                       <select
                         value={activeVideoId}
-                        required
-                        onChange={(e) => setActiveVideoId(e.target.value)}
+                        onChange={(e) => {
+                          setActiveVideoId(e.target.value);
+                          setPresentationDirty(true);
+                        }}
                       >
-                        <option value="" disabled>
-                          Select a video
+                        <option value="">
+                          Company default
+                          {companyDefaultVideoId
+                            ? ` (${
+                                settingsVideos.find((v) => v.id === companyDefaultVideoId)
+                                  ?.title || "fallback"
+                              })`
+                            : ""}
                         </option>
                         {settingsVideos.map((v) => (
                           <option key={v.id} value={v.id}>
@@ -779,9 +799,10 @@ export function UsersPage() {
                       Access Policy
                       <select
                         value={accessPolicy}
-                        onChange={(e) =>
-                          setAccessPolicy(e.target.value as AccessPolicy)
-                        }
+                        onChange={(e) => {
+                          setAccessPolicy(e.target.value as AccessPolicy);
+                          setPresentationDirty(true);
+                        }}
                       >
                         {ADMIN_ACCESS_POLICY_OPTIONS.map((policy) => (
                           <option key={policy} value={policy}>
@@ -799,14 +820,16 @@ export function UsersPage() {
                           max={365}
                           required
                           value={accessDurationDays}
-                          onChange={(e) =>
-                            setAccessDurationDays(Number(e.target.value))
-                          }
+                          onChange={(e) => {
+                            setAccessDurationDays(Number(e.target.value));
+                            setPresentationDirty(true);
+                          }}
                         />
                       </label>
                     ) : null}
                     <p className="muted small">
-                      Presentation settings apply to new invitations only.
+                      Explicit assignment overrides company default for new
+                      invitations only. Existing invitations keep their snapshot.
                     </p>
                   </>
                 ) : null}
