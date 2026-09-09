@@ -1640,6 +1640,10 @@ Secondary sharp edge (real UI bug, not the Part 13 invite cause): Admin Users ed
 ### Future Dan-created invitations
 Will receive **`PcMlyjYFumQfRURoy1dJ`** given current profile assignment.
 
+### Git
+- Feature commit: `5c86208808b1908a369346722c865b482ebd9401`
+- Origin synchronized (0 ahead / 0 behind)
+
 ### Remaining risks
 - Platform admins with null presentationSettings still use company default when creating invites (by design)
 - Other reps without explicit assignment inherit company default
